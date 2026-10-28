@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Conversations · Shelley</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/debug/debug.css" />
+    <script src="/debug/theme.js"></script>
+    <script src="/debug/conversations/conversations.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <h1>Conversations</h1>
+      <p class="muted">
+        Unarchived top-level conversations. CSV has one row per agent message:
+        <code>input_tokens,cache_write_tokens,cache_read_tokens,output_tokens</code>
+      </p>
+      <input id="filter" type="search" placeholder="Filter by slug…" autocomplete="off" />
+      <p class="error" id="error" hidden></p>
+      <table>
+        <thead>
+          <tr>
+            <th>Slug</th>
+            <th>Created</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="list"></tbody>
+      </table>
+    </main>
+  </body>
+</html>

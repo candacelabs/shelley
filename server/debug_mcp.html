@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MCP · Shelley</title>
+<style>{{.CSS}}</style>
+</head>
+<body>
+<h1>MCP</h1>
+<p class="muted"><a href="/debug/mcp">Refresh</a></p>
+
+<h2>Servers</h2>
+{{if .Servers}}
+<div class="scroll"><table>
+<thead><tr><th>Name</th><th>URL</th><th>Headers</th><th>Login</th></tr></thead>
+<tbody>
+{{range .Servers}}
+<tr>
+<td>{{.Name}}</td>
+<td class="mono">{{.URL}}</td>
+<td class="mono">{{range .HeaderNames}}<div>{{.}}</div>{{end}}</td>
+<td>
+{{if .OAuthCapable}}
+<dl>
+<dt>State</dt><dd>{{or .Login.Auth "not logged in"}}</dd>
+{{with .Login.ClientID}}<dt>Client ID</dt><dd class="mono">{{.}}</dd>{{end}}
+{{if eq .Login.Auth "logged_in"}}
+<dt>Token expires</dt><dd>{{if .Login.Expiry.IsZero}}unknown{{else}}{{clock .Login.Expiry}}{{end}}</dd>
+<dt>Refresh token</dt><dd>{{if .Login.HasRefreshToken}}yes{{else}}no{{end}}</dd>
+{{end}}
+{{if not .Login.PendingSince.IsZero}}<dt>Pending login</dt><dd>started {{ago .Login.PendingSince}} ago</dd>{{end}}
+</dl>
+{{else}}<span class="muted">static Authorization header</span>{{end}}
+</td>
+</tr>
+{{end}}
+</tbody>
+</table></div>
+{{else}}<p class="muted">No servers.</p>{{end}}
+
+<h2>Sessions</h2>
+{{if .Snapshot.Sessions}}
+<div class="scroll"><table>
+<thead><tr><th>Server</th><th>Conversation</th><th>MCP session ID</th><th>In flight</th><th>Idle for</th></tr></thead>
+<tbody>
+{{range .Snapshot.Sessions}}
+<tr>
+<td>{{.Server}}</td>
+<td>{{if .Scope}}<a class="mono" href="/c/{{.Scope}}">{{.Scope}}</a>{{else}}<span class="muted">UI</span>{{end}}</td>
+<td class="mono">{{.ID}}</td>
+<td>{{.InFlight}}</td>
+<td>{{if not .IdleSince.IsZero}}{{ago .IdleSince}}{{end}}</td>
+</tr>
+{{end}}
+</tbody>
+</table></div>
+{{else}}<p class="muted">No sessions.</p>{{end}}
+
+<h2>Events</h2>
+{{if .Snapshot.Events}}
+<div class="scroll"><table>
+<thead><tr><th>Time</th><th>Server</th><th>Conversation</th><th>Kind</th><th>Message</th></tr></thead>
+<tbody>
+{{range .Snapshot.Events}}
+<tr>
+<td class="nowrap">{{clock .Time}}</td>
+<td>{{.Server}}</td>
+<td>{{if .Scope}}<a class="mono" href="/c/{{.Scope}}">{{.Scope}}</a>{{end}}</td>
+<td class="nowrap">{{.Kind}}</td>
+<td class="message">{{.Message}}</td>
+</tr>
+{{end}}
+</tbody>
+</table></div>
+{{else}}<p class="muted">No events.</p>{{end}}
+</body>
+</html>

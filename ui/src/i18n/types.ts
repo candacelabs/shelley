@@ -1,0 +1,467 @@
+export type Locale = "en" | "ja" | "fr" | "ru" | "es" | "zh-CN" | "zh-TW" | "upgoer5" | "vi";
+
+export interface TranslationKeys {
+  // App-level
+  loading: string;
+  diskSpaceLow: string;
+  diskSpaceCritical: string;
+  diskSpaceRemaining: string;
+  memoryPressureHigh: string;
+  memoryPressureCritical: string;
+  memoryAvailable: string;
+  memoryStalled: string;
+  memoryStalledTitle: string;
+  resizeVM: string;
+  dismiss: string;
+  retry: string;
+  failedToLoadConversations: string;
+
+  // Chat Header & Actions
+  newConversation: string;
+  moreOptions: string;
+  actions: string;
+
+  // Overflow Menu
+  diffs: string;
+  gitGraph: string;
+  terminal: string;
+  archiveConversation: string;
+  exportConversation: string;
+  checkForNewVersion: string;
+  conversationView: string;
+  seeAllMessages: string;
+  seeEndOfTurnMessagesOnly: string;
+  seeChatOnly: string;
+  brevity: string;
+  look: string;
+
+  // Theme
+  system: string;
+  light: string;
+  dark: string;
+
+  // Notifications
+  enableNotifications: string;
+  disableNotifications: string;
+  blockedByBrowser: string;
+  osNotificationsWhenHidden: string;
+  requiresBrowserPermission: string;
+  on: string;
+
+  // Command Palette
+  searchPlaceholder: string;
+  searching: string;
+  noResults: string;
+  searchConversations: string;
+  noSearchResults: string;
+  clearSearch: string;
+  toNavigate: string;
+  toSelect: string;
+  toClose: string;
+  action: string;
+
+  // Command Palette Actions
+  newConversationAction: string;
+  startNewConversation: string;
+  nextConversation: string;
+  switchToNext: string;
+  previousConversation: string;
+  switchToPrevious: string;
+  nextUserMessage: string;
+  jumpToNextMessage: string;
+  previousUserMessage: string;
+  jumpToPreviousMessage: string;
+  viewDiffs: string;
+  openGitDiffViewer: string;
+  openGitGraphViewer: string;
+  addRemoveModelsKeys: string;
+  configureModels: string;
+  notificationSettings: string;
+  configureNotifications: string;
+  enableMarkdownAgent: string;
+  renderMarkdownAgent: string;
+  enableMarkdownAll: string;
+  renderMarkdownAll: string;
+  disableMarkdown: string;
+  showPlainText: string;
+  archiveConversationAction: string;
+  archiveCurrentConversation: string;
+  newConversationInMainRepo: string;
+  newConversationInHomeDirectory: string;
+  newConversationInNewWorktree: string;
+  createNewWorktree: string;
+  setWorkingDirToRepoRoot: string;
+  setWorkingDirToMainRepo: string;
+
+  // Conversation Drawer
+  archived: string;
+  noArchivedConversations: string;
+  noConversationsYet: string;
+  startNewToGetStarted: string;
+  backToConversations: string;
+  viewArchived: string;
+  rename: string;
+  editTags: string;
+  addTagPlaceholder: string;
+  removeTag: string;
+  addTag: string;
+  archive: string;
+  restore: string;
+  deletePermanently: string;
+  confirmDelete: string;
+  confirmDeleteShort: string;
+  duplicateName: string;
+  agentIsWorking: string;
+  subagentIsWorking: string;
+  running: string;
+  hideSubagents: string;
+  terminalsPinnedHere: string;
+  showSubagents: string;
+  groupConversations: string;
+  resortNow: string;
+  noGrouping: string;
+  directory: string;
+  gitRepo: string;
+  other: string;
+  clearTagFilter: string;
+  untagged: string;
+  participants: string;
+  unattributed: string;
+  searchOrTagPlaceholder: string;
+  noMatchingTags: string;
+  noTagsToNarrow: string;
+  noConversationsMatchTags: string;
+  collapseSubagents: string;
+  expandSubagents: string;
+  collapseSidebar: string;
+  closeConversations: string;
+  yesterday: string;
+  daysAgo: string;
+
+  // Message Input
+  messagePlaceholder: string;
+  messagePlaceholderShort: string;
+  attachFile: string;
+  sendMessage: string;
+  recordingTitle: string;
+  recordingReturn: string;
+  recordingStop: string;
+  recordingStopTranscription: string;
+  recordingStarting: string;
+  recordingInProgress: string;
+  recordingScreenInProgress: string;
+  recordingStopping: string;
+  recordingTooShort: string;
+  recordingFailed: string;
+  recordingUnavailable: string;
+  recordingRetained: string;
+  recordingDiscard: string;
+  recordingInvalidResponse: string;
+  recordingScreenAction: string;
+  recordingVoiceOption: string;
+  recordingVoiceScreenOption: string;
+  recordingTranscribing: string;
+  recordingScreenEnded: string;
+  dropFilesHere: string;
+  uploading: string;
+  uploadFailed: string;
+
+  // Models Modal
+  manageModels: string;
+  addModel: string;
+  addModels: string;
+  accountLabelPlaceholder: string;
+  checkModels: string;
+  checkingModels: string;
+  providerNoModels: string;
+  providerChatModelCount: string;
+
+  refreshModels: string;
+  refreshingModels: string;
+  providerAccounts: string;
+  addProvider: string;
+  addModelSingle: string;
+  connectProvider: string;
+  editProvider: string;
+  refreshProvider: string;
+  removeProvider: string;
+  removeProviderTitle: string;
+  removeProviderConfirmation: string;
+  providerModelCount: string;
+  providerListUnavailable: string;
+  noProviderAccounts: string;
+  providerKeySaved: string;
+  providerDisplayName: string;
+  providerApiKeyKeepExisting: string;
+  providerSaving: string;
+  removingProvider: string;
+  providerSelectionRequired: string;
+  searchModels: string;
+  recentModels: string;
+  noModelsFound: string;
+  notReadyBadge: string;
+  showAllModels: string;
+  showFewerModels: string;
+  manageModelsAction: string;
+  closeAction: string;
+  effortLabel: string;
+  toolsLabel: string;
+  toolsAtDefaults: string;
+  profileLabel: string;
+  editAction: string;
+  editToolsAction: string;
+  editProfilesAction: string;
+  profileDiffersFrom: string;
+  profileUpdate: string;
+  profileSaveAsNew: string;
+  profileRevert: string;
+  profileDeleted: string;
+  profileUnsaved: string;
+  profileNewName: string;
+  changeReasoning: string;
+  autoCompaction: string;
+  /** The name inside a sentence, as in "auto compaction on". */
+  autoCompactionName: string;
+  autoCompactionNeeded: string;
+  changeToolOn: string;
+  changeToolOff: string;
+  changeNudge: string;
+  compactNudgeAt: string;
+  changeSystemPrompt: string;
+  effortAuto: string;
+  modelSwitchBusy: string;
+  modelSwitchHint: string;
+  cwdChangeHint: string;
+  cwdChangeBusy: string;
+  customModelsGroup: string;
+  editModel: string;
+  loadingModels: string;
+  providerApiFormat: string;
+  endpoint: string;
+  defaultEndpoint: string;
+  customEndpoint: string;
+  model: string;
+  displayName: string;
+  nameShownInSelector: string;
+  apiKey: string;
+  enterApiKey: string;
+  maxOutputTokens: string;
+  maxOutputTokensHelp: string;
+  maxOutputTokensPlaceholder: string;
+  imageSupport: string;
+  imageSupportHelp: string;
+  imageSupportAuto: string;
+  imageSupportYes: string;
+  imageSupportNo: string;
+  tags: string;
+  columnName: string;
+  columnModelId: string;
+  columnProvider: string;
+  columnActions: string;
+  columnImages: string;
+  imageSupportAutoShort: string;
+  imageSupportAutoResolved: string;
+  reasoningEffort: string;
+  reasoningEffortPlaceholder: string;
+  reasoningEffortHint: string;
+  supportsReasoning: string;
+  reasoningSupportAuto: string;
+  reasoningSupportYes: string;
+  reasoningSupportNo: string;
+  reasoningSupportHelp: string;
+  reasoningReplay: string;
+  reasoningReplayAuto: string;
+  reasoningReplayNone: string;
+  reasoningReplayHelp: string;
+  reasoningReplayAutoResolved: string;
+  reasoningLevelMapping: string;
+  reasoningMappingUnsupported: string;
+  reasoningMappingHelp: string;
+  testButton: string;
+  testingButton: string;
+  save: string;
+  cancel: string;
+  duplicate: string;
+  delete_: string;
+  modelNameRequired: string;
+  apiKeyRequired: string;
+  noModelsConfigured: string;
+  noModelsHint: string;
+
+  // MCP Servers Modal
+  mcpServers: string;
+  configureMcpServers: string;
+  addMcpServer: string;
+  editMcpServer: string;
+  loadingMcpServers: string;
+  noMcpServers: string;
+  noMcpServersHint: string;
+  columnDescription: string;
+  mcpTools: string;
+  mcpToolsTitle: string;
+  mcpConnecting: string;
+  mcpNoTools: string;
+  mcpNameHint: string;
+  mcpDescriptionPlaceholder: string;
+  mcpHeaders: string;
+  mcpAddHeader: string;
+  mcpValue: string;
+  mcpRemoveHeader: string;
+  mcpColumnLogin: string;
+  mcpLoggedIn: string;
+  mcpLoginRequired: string;
+  mcpLogIn: string;
+  mcpLogOut: string;
+  mcpLoggedInTo: string;
+  mcpDebug: string;
+
+  // Notifications Modal
+  notifications: string;
+  browserNotifications: string;
+  faviconBadge: string;
+  exeDevPushNotifications: string;
+  exeDevPushNotificationsDescription: string;
+  editChannel: string;
+  addChannel: string;
+  customChannels: string;
+  noCustomChannels: string;
+  addWebhookHint: string;
+  channelName: string;
+  channelType: string;
+  webhookUrl: string;
+  enabled: string;
+  testNotification: string;
+  denied: string;
+  noServerChannelsConfigured: string;
+  addOne: string;
+  edit: string;
+
+  // Favicon Emoji Modal
+  faviconEmoji: string;
+  pickFaviconEmoji: string;
+  faviconEmojiSaving: string;
+  faviconEmojiFromExe: string;
+  faviconEmojiChangeOnExe: string;
+
+  // Integrations Modal
+  slackDestination: string;
+  slackWebhookTestDescription: string;
+  slackTestIntegration: string;
+  slackBotTestError: string;
+  slackMessageSent: string;
+  vmIntegrations: string;
+  viewIntegrationsAvailable: string;
+  refresh: string;
+  attached: string;
+  loadingIntegrations: string;
+  noIntegrationsAttached: string;
+  integrationName: string;
+  integrationType: string;
+  integrationScope: string;
+  team: string;
+  personal: string;
+  manageOnExeDev: string;
+  loadingIntegrationDetails: string;
+  whatVmGets: string;
+  provider: string;
+  accessVia: string;
+  exeDevManaged: string;
+  availableModels: string;
+  noProvidersEnabled: string;
+  browseModelsInShelley: string;
+  repository: string;
+  copyCloneCommand: string;
+  copy: string;
+  copied: string;
+  testPushNotification: string;
+  testPushNotificationDescription: string;
+  testMessage: string;
+  sending: string;
+  sendTestNotification: string;
+  testAccepted: string;
+  comment: string;
+  connectionAndCli: string;
+  copyEndpoint: string;
+  copyEditCommand: string;
+  cliEditOptions: string;
+  howToUseIt: string;
+  copyGuide: string;
+  integrationAccountNote: string;
+  allIntegrations: string;
+  defaultTestMessage: string;
+  modelChat: string;
+  modelEmbeddings: string;
+  modelTranscription: string;
+  modelOther: string;
+
+  // Diff Viewer
+  noFiles: string;
+  chooseFile: string;
+  commentMode: string;
+  editMode: string;
+
+  // Directory Picker
+  newFolderName: string;
+  create: string;
+  noMatchingDirectories: string;
+  noSubdirectories: string;
+  createNewFolder: string;
+
+  // Messages
+  copyCommitHash: string;
+  clickToCopyCommitHash: string;
+  unknownTool: string;
+  toolOutput: string;
+  errorOccurred: string;
+
+  // Version
+  updateAvailable: string;
+
+  // Welcome / Empty State
+  welcomeTitle: string;
+  welcomeSubtitle: string;
+  welcomeMessage: string;
+  // welcomeMessageLocal is shown instead of welcomeMessage when Shelley is not
+  // running on an exe.dev host, so it omits exe.dev-specific proxy details.
+  welcomeMessageLocal: string;
+  // Link labels embedded in the welcome messages via {openSourceLink} and
+  // {customizeLink} placeholders.
+  welcomeOpenSource: string;
+  welcomeCustomize: string;
+  sendMessageToStart: string;
+  sendOrTalkToStart: string;
+  startVoiceConversation: string;
+  noModelsTitle: string;
+  noModelsExeNote: string;
+  noModelsAddLink: string;
+  noModelsExeRefresh: string;
+  noModelSelectedPlaceholder: string;
+
+  // Status Bar
+  modelLabel: string;
+  dirLabel: string;
+
+  // AGENTS.md editor
+  editUserAgentsMd: string;
+  editFile: string;
+  editFileShortcut: string;
+
+  // Sidebar buttons
+  openConversations: string;
+  commandMenu: string;
+  expandSidebar: string;
+
+  // Language
+  language: string;
+  off: string;
+  switchLanguage: string;
+  english: string;
+  japanese: string;
+  french: string;
+  russian: string;
+  spanish: string;
+  upgoerFive: string;
+  simplifiedChinese: string;
+  traditionalChinese: string;
+  vietnamese: string;
+}

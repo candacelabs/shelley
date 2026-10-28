@@ -1,0 +1,34 @@
+# pnpm reads its settings here; .npmrc is for npm, and pnpm 11 and later read
+# only registry and auth settings from it. bin/check-npm-hardening.sh requires
+# these.
+ignoreScripts: true
+frozenLockfile: true
+# Don't install packages published less than 7 days ago (in minutes), to keep
+# compromised or malicious new releases out.
+minimumReleaseAge: 10080
+# Don't make pnpm enforce packageManager: it would record itself in
+# pnpm-lock.yaml as a first YAML document, the only one GitHub's dependency
+# graph reads (dependabot/dependabot-core#15904). mise.toml holds the pnpm
+# version instead, and scripts/with-node enforces it.
+pmOnFail: ignore
+# CI restores node_modules from a host-wide cache built against another
+# slot's store; verifying before each run would reinstall into this one.
+verifyDepsBeforeRun: false
+# Refuse Node releases missing security fixes (package.json engines).
+engineStrict: true
+# Allow recent @xterm betas (kitty keyboard protocol support not yet in a
+# stable release).
+minimumReleaseAgeExclude:
+  - "@xterm/xterm"
+  - "@xterm/addon-fit"
+  - "@xterm/addon-web-links"
+# Dependencies whose build scripts may run, though ignoreScripts runs none.
+allowBuilds:
+  esbuild: true
+overrides:
+  shiki: "^3.22.0"
+  "@shikijs/core": "^3.22.0"
+  "@shikijs/engine-javascript": "^3.22.0"
+  "@shikijs/transformers": "^3.22.0"
+patchedDependencies:
+  "@primevue/core@4.5.5": patches/@primevue__core@4.5.5.patch

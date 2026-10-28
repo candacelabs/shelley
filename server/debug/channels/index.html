@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Channels · Shelley</title>
+<link rel="stylesheet" href="/styles.css">
+<link rel="stylesheet" href="/debug/channels/channels.css">
+<script src="/debug/theme.js"></script>
+<script src="/debug/channels/channels.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <aside class="list-pane">
+    <header class="list-head">
+      <h1>Channels</h1>
+      <span class="offline" id="offline" hidden>offline</span>
+      <button class="btn" id="new-chat" type="button">New chat</button>
+    </header>
+    <nav id="list" class="list"></nav>
+    <p class="foot muted">A stand-in for the exe.dev messages service. Each chat is a conversation; this page plays the phone. Chats are kept in memory and cleared when Shelley restarts.</p>
+  </aside>
+  <main class="chat-pane" id="chat"></main>
+</div>
+</body>
+</html>

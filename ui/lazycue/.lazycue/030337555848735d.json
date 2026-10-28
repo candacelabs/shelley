@@ -1,0 +1,49 @@
+{
+  "_README": "This file is managed by LazyCue (see shelley/lazycue). Do NOT edit by hand — it is the cached, machine-generated DSL for a self-healing browser test. To change behavior, edit the test description and re-run LazyCue.",
+  "description": "Navigate to /new and wait for the message input (data-testid \"message-input\") to be visible. There should be exactly one new-conversation status block: selector \".status-bar-new-conversation\" should match exactly 1 element. On this phone-sized viewport that block is deliberately hidden by CSS (the model and directory live in the overflow menu instead), so only count it; never wait for it or any of its ancestors to be visible. Type \"hello draft\" into the message input. Typing promotes the conversation to a draft, so wait for the URL to contain \"/c/\". After that, add a short sleep (about 1 second) to let the UI settle, then confirm the new-conversation status block is NOT duplicated: selector \".status-bar-new-conversation\" should still match exactly 1 element.",
+  "version": 1,
+  "steps": [
+    {
+      "action": "navigate",
+      "url": "/new"
+    },
+    {
+      "action": "wait_visible",
+      "selector": "[data-testid='message-input']",
+      "timeout": "10s"
+    },
+    {
+      "action": "assert_count",
+      "selector": ".status-bar-new-conversation",
+      "count": 1
+    },
+    {
+      "action": "fill",
+      "selector": "[data-testid='message-input']",
+      "value": "hello draft"
+    },
+    {
+      "action": "wait_url",
+      "text": "/c/",
+      "timeout": "10s"
+    },
+    {
+      "action": "sleep",
+      "timeout": "1s"
+    },
+    {
+      "action": "assert_count",
+      "selector": ".status-bar-new-conversation",
+      "count": 1
+    }
+  ],
+  "metadata": {
+    "created_at": "2026-10-22T19:14:37.768191807Z",
+    "hostname": "phil-dev",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 35350,
+    "output_tokens": 1040,
+    "estimated_cost_usd": 0.12165000000000001,
+    "mode": "generated"
+  }
+}

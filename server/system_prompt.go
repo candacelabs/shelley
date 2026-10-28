@@ -1,0 +1,1252 @@
+package server
+
+import (
+	"bytes"
+	"context"
+	_ "embed"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"text/template"
+	"time"
+	"unicode/utf8"
+
+	"shelley.exe.dev/exeenv"
+	"shelley.exe.dev/skills"
+)
+
+//go:embed system_prompt.txt
+var systemPromptTemplate string
+
+//go:embed subagent_system_prompt.txt
+var subagentSystemPromptTemplate string
+
+// SystemPromptData contains all the data needed to render the system prompt template
+type SystemPromptData struct {
+	WorkingDirectory string
+	GitInfo          *GitInfo
+	Codebase         *CodebaseInfo
+	IsExeDev         bool
+	IsSudoAvailable  bool
+	Hostname         string // For exe.dev, the public hostname (e.g., "vmname.exe.xyz")
+	DefaultPort      int    // For exe.dev, the auto-routed HTTP port, 0 if unknown
+	SkillsXML        string // XML block for available skills
+	Skills           []skills.Skill
+	UserEmail        string          // The exe.dev auth email of the user, if known
+	MCPServers       []MCPServerInfo // Registered MCP servers, for the mcp skill
+	// ExeDevIntegrations are the attached exe-dev integrations.
+	ExeDevIntegrations []ExeDevIntegrationInfo
+
+	template string // the template to render, "" for the built-in one
+}
+
+// SystemPromptVariable documents a field of SystemPromptData for people
+// writing their own system prompt templates.
+type SystemPromptVariable struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// systemPromptVariables are the fields a system prompt template can use.
+var systemPromptVariables = []SystemPromptVariable{
+	{".WorkingDirectory", "The conversation's working directory."},
+	{".UserEmail", "The user's exe.dev email; empty if unknown."},
+	{".GitInfo.Root", "The git repository root. .GitInfo is nil outside a repository."},
+	{".IsExeDev", "Whether Shelley runs on an exe.dev VM."},
+	{".Hostname", "On exe.dev, the VM's public hostname (vmname.exe.xyz)."},
+	{".DefaultPort", "On exe.dev, the port served at the hostname; 0 if unknown."},
+	{".IsSudoAvailable", "Whether passwordless sudo works."},
+	{".Codebase.InjectFiles", "Paths of the root guidance files (AGENTS.md, CLAUDE.md, …). .Codebase is nil if they couldn't be read."},
+	{".Codebase.InjectFileContents", "Map from guidance file path to its contents."},
+	{".Codebase.SubdirGuidanceSummary", "A list of the guidance files in subdirectories."},
+	{".SkillsXML", "The available skills, as an XML block."},
+	{".Skills", "The available skills: .Name, .Description, .Activate, …"},
+	{".MCPServersXML", "The registered MCP servers, as an XML block."},
+	{".ExeDevIntegrationsXML", "On exe.dev, the attached exe-dev integrations, which use the user's exe.dev account, as an XML block."},
+}
+
+// validateSystemPromptTemplate reports why tmpl can't be rendered, by
+// rendering it against data with every optional part absent, and present:
+// outside a git repository, say, GitInfo is nil.
+func validateSystemPromptTemplate(tmpl string) *TemplateProblem {
+	for _, data := range []*SystemPromptData{{template: tmpl}, {
+		WorkingDirectory: "/home/user/project",
+		GitInfo:          &GitInfo{Root: "/home/user/project"},
+		Codebase: &CodebaseInfo{
+			InjectFiles:         []string{"/home/user/project/AGENTS.md"},
+			InjectFileContents:  map[string]string{"/home/user/project/AGENTS.md": "guidance"},
+			SubdirGuidanceFiles: []string{"/home/user/project/ui/AGENTS.md"},
+		},
+		IsExeDev:           true,
+		IsSudoAvailable:    true,
+		Hostname:           "vm.exe.xyz",
+		DefaultPort:        8000,
+		SkillsXML:          "<available_skills></available_skills>",
+		Skills:             []skills.Skill{{Name: "skill", Description: "A skill."}},
+		UserEmail:          "user@example.com",
+		MCPServers:         []MCPServerInfo{{Name: "server", Description: "An MCP server."}},
+		ExeDevIntegrations: []ExeDevIntegrationInfo{{Name: "exe-dev", URL: "https://exe-dev.int.exe.xyz"}},
+		template:           tmpl,
+	}} {
+		if _, err := renderSystemPrompt(data); err != nil {
+			return err.(*TemplateProblem)
+		}
+	}
+	return nil
+}
+
+// renderSystemPrompt renders data's template. Its errors are
+// *TemplateProblem.
+func renderSystemPrompt(data *SystemPromptData) (string, error) {
+	text := data.template
+	if text == "" {
+		text = systemPromptTemplate
+	}
+	tmpl, err := template.New("system_prompt").Option("missingkey=error").Parse(text)
+	if err != nil {
+		return "", templateProblemOf(text, err)
+	}
+	var buf strings.Builder
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", templateProblemOf(text, err)
+	}
+	return collapseBlankLines(buf.String()), nil
+}
+
+// TemplateProblem is why a system prompt template can't be rendered, and
+// where: a line, and within it a column in characters, both counted from
+// 1, and 0 if unknown.
+type TemplateProblem struct {
+	Line    int    `json:"line,omitempty"`
+	Column  int    `json:"column,omitempty"`
+	Message string `json:"message"`
+}
+
+func (p *TemplateProblem) Error() string {
+	if p.Line == 0 {
+		return p.Message
+	}
+	return fmt.Sprintf("line %d: %s", p.Line, p.Message)
+}
+
+var (
+	// template: system_prompt:49:2: executing "sub" at <.X>: detail
+	// (49:2 is a line and a 0-based byte offset in it).
+	templateErrorRe = regexp.MustCompile(`(?s)^template: system_prompt:(\d+)(?::(\d+))?: (.*)$`)
+	templateExecRe  = regexp.MustCompile(`(?s)^executing ".*?" at <(.*?)>: (.*)$`)
+)
+
+// templateProblemOf says what err, from parsing or executing the system
+// prompt template text, means for the person who wrote it.
+func templateProblemOf(text string, err error) *TemplateProblem {
+	m := templateErrorRe.FindStringSubmatch(err.Error())
+	if m == nil {
+		return &TemplateProblem{Message: err.Error()}
+	}
+	p := &TemplateProblem{Message: m[3]}
+	p.Line, _ = strconv.Atoi(m[1])
+	if m[2] != "" {
+		offset, _ := strconv.Atoi(m[2])
+		if lines := strings.Split(text, "\n"); p.Line >= 1 && p.Line <= len(lines) && offset <= len(lines[p.Line-1]) {
+			p.Column = 1 + utf8.RuneCountInString(lines[p.Line-1][:offset])
+		}
+	}
+	if m := templateExecRe.FindStringSubmatch(p.Message); m != nil {
+		expr, detail := m[1], m[2]
+		switch {
+		case strings.HasPrefix(detail, "can't evaluate field "):
+			p.Message = "unknown variable " + expr
+		case strings.HasPrefix(detail, "nil pointer evaluating "):
+			parent := expr
+			if i := strings.LastIndex(expr, "."); i > 0 {
+				parent = expr[:i]
+			}
+			p.Message = fmt.Sprintf("%s can be missing; use it inside {{if %s}}…{{end}}", parent, parent)
+		default:
+			p.Message = expr + ": " + detail
+		}
+	} else if p.Message == "unexpected EOF" {
+		p.Message = "the template ends before a }} or {{end}}"
+	}
+	return p
+}
+
+// MCPServerInfo is a registered MCP server, named in the system prompt so the
+// model knows which external services it can reach with `shelley mcp`.
+type MCPServerInfo struct {
+	Name        string
+	Description string
+}
+
+// MCPServersXML renders the registered MCP servers as a block for the system
+// prompt, or "" when none are registered.
+func (d *SystemPromptData) MCPServersXML() string { return mcpServersXML(d.MCPServers) }
+
+// mcpServersXML renders servers as an <mcp_servers> block, or "" when empty.
+func mcpServersXML(servers []MCPServerInfo) string {
+	if len(servers) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("<mcp_servers>\n")
+	b.WriteString("These MCP servers are registered. Reach them with `shelley mcp` (see the mcp skill); they are not model tools.\n")
+	for _, s := range servers {
+		if desc := strings.TrimSpace(s.Description); desc != "" {
+			fmt.Fprintf(&b, "- %s: %s\n", s.Name, desc)
+		} else {
+			fmt.Fprintf(&b, "- %s\n", s.Name)
+		}
+	}
+	b.WriteString("</mcp_servers>")
+	return b.String()
+}
+
+// ExeDevIntegrationInfo is an attached exe-dev integration, named in the
+// system prompt so the model knows it can use the user's exe.dev account.
+type ExeDevIntegrationInfo struct {
+	Name    string
+	URL     string
+	Comment string
+}
+
+// ExeDevIntegrationsXML renders the attached exe-dev integrations as a block
+// for the system prompt, or "" when none are attached.
+func (d *SystemPromptData) ExeDevIntegrationsXML() string {
+	return exeDevIntegrationsXML(d.ExeDevIntegrations)
+}
+
+// exeDevIntegrationsXML renders integrations as an <exe_dev_integrations>
+// block, or "" when empty.
+func exeDevIntegrationsXML(integrations []ExeDevIntegrationInfo) string {
+	if len(integrations) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("<exe_dev_integrations>\n")
+	b.WriteString("These integrations act as the user on exe.dev, with no credentials needed. `curl <url>/` says how to use one and what it may do; `curl -X POST <url>/exec -d whoami` runs an exe.dev CLI command. Ask the user before deleting VMs, sharing, or other hard-to-undo account changes.\n")
+	for _, ig := range integrations {
+		if comment := strings.TrimSpace(ig.Comment); comment != "" {
+			fmt.Fprintf(&b, "- %s: %s (%s)\n", ig.Name, ig.URL, comment)
+		} else {
+			fmt.Fprintf(&b, "- %s: %s\n", ig.Name, ig.URL)
+		}
+	}
+	b.WriteString("</exe_dev_integrations>")
+	return b.String()
+}
+
+// DBPath is the path to the shelley database, set at startup
+var DBPath string
+
+type GitInfo struct {
+	Root string
+}
+
+type CodebaseInfo struct {
+	InjectFiles         []string
+	InjectFileContents  map[string]string
+	SubdirGuidanceFiles []string
+}
+
+// SubdirGuidanceSummary returns a prompt-friendly summary of subdirectory guidance files.
+// If ≤10, lists them explicitly. If >10, lists the first 10 and notes how many more exist.
+func (c *CodebaseInfo) SubdirGuidanceSummary() string {
+	if len(c.SubdirGuidanceFiles) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\nSubdirectory guidance files (read before editing files in these directories):\n")
+	show := c.SubdirGuidanceFiles
+	if len(show) > 10 {
+		show = show[:10]
+	}
+	for _, f := range show {
+		b.WriteString(f)
+		b.WriteByte('\n')
+	}
+	if len(c.SubdirGuidanceFiles) > 10 {
+		fmt.Fprintf(&b, "...and %d more. Use `find` to discover others.\n", len(c.SubdirGuidanceFiles)-10)
+	}
+	return b.String()
+}
+
+// SystemPromptOption configures optional fields on the system prompt.
+type SystemPromptOption func(*SystemPromptData)
+
+// WithUserEmail sets the user's email in the system prompt.
+func WithUserEmail(email string) SystemPromptOption {
+	return func(d *SystemPromptData) {
+		d.UserEmail = email
+	}
+}
+
+// WithTemplate renders tmpl instead of the built-in template; "" keeps the
+// built-in one.
+func WithTemplate(tmpl string) SystemPromptOption {
+	return func(d *SystemPromptData) {
+		d.template = tmpl
+	}
+}
+
+// WithMCPServers lists the registered MCP servers in the system prompt.
+func WithMCPServers(servers []MCPServerInfo) SystemPromptOption {
+	return func(d *SystemPromptData) {
+		d.MCPServers = servers
+	}
+}
+
+// WithExeDevIntegrations lists the attached exe-dev integrations in the
+// system prompt.
+func WithExeDevIntegrations(integrations []ExeDevIntegrationInfo) SystemPromptOption {
+	return func(d *SystemPromptData) {
+		d.ExeDevIntegrations = integrations
+	}
+}
+
+// GenerateSystemPrompt generates the system prompt using the embedded template.
+// If workingDir is empty, it uses the current working directory.
+func GenerateSystemPrompt(workingDir string, opts ...SystemPromptOption) (string, error) {
+	prompt, _, err := generateSystemPrompt(workingDir, opts...)
+	return prompt, err
+}
+
+func generateSystemPrompt(workingDir string, opts ...SystemPromptOption) (string, []skills.Skill, error) {
+	return generateSystemPromptWithIntegrationSkills(workingDir, nil, opts...)
+}
+
+func generateSystemPromptWithIntegrationSkills(workingDir string, integrationSkills []skills.Skill, opts ...SystemPromptOption) (string, []skills.Skill, error) {
+	data, err := collectSystemData(workingDir, integrationSkills)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to collect system data: %w", err)
+	}
+
+	for _, opt := range opts {
+		opt(data)
+	}
+
+	prompt, err := renderSystemPrompt(data)
+	if err != nil {
+		return "", nil, err
+	}
+	prompt, err = runHook(hookSystemPrompt, prompt)
+	if err != nil {
+		return "", nil, err
+	}
+	return prompt, data.Skills, nil
+}
+
+// collapseBlankLines reduces runs of 3+ newlines to 2 (one blank line)
+// and trims leading/trailing whitespace.
+var reBlankRun = regexp.MustCompile(`\n{3,}`)
+
+func collapseBlankLines(s string) string {
+	s = strings.TrimSpace(s)
+	s = reBlankRun.ReplaceAllString(s, "\n\n")
+	return s + "\n"
+}
+
+const (
+	hookSystemPrompt    = "system-prompt"
+	hookNewConversation = "new-conversation"
+	hookEndOfTurn       = "end-of-turn"
+	hookChatMessage     = "chat-message"
+	hookStatusBar       = "status-bar"
+)
+
+// HookHeaders converts an http.Header to a sorted list of [name, value]
+// pairs used in hook JSON payloads, stripping headers that routinely carry
+// authentication secrets (Cookie, Set-Cookie, Authorization,
+// Proxy-Authorization). Hooks are user-provided scripts on the filesystem
+// and shouldn't see those. Multi-valued headers produce one pair per value,
+// preserving value order. Returns nil if no headers remain so the
+// `omitempty` JSON tag drops the field for non-HTTP callers.
+func HookHeaders(h http.Header) [][2]string {
+	if len(h) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(h))
+	for k := range h {
+		switch http.CanonicalHeaderKey(k) {
+		case "Cookie", "Set-Cookie", "Authorization", "Proxy-Authorization":
+			continue
+		}
+		names = append(names, k)
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	sort.Strings(names)
+	out := make([][2]string, 0, len(names))
+	for _, k := range names {
+		for _, v := range h[k] {
+			out = append(out, [2]string{k, v})
+		}
+	}
+	return out
+}
+
+// NewConversationHookInput is the JSON data passed to the new-conversation hook on stdin.
+// The JSON has mutable fields at the top level and a "readonly" block for context.
+//
+// Example JSON:
+//
+//	{
+//	  "prompt": "the user's message",
+//	  "model": "claude-sonnet-4.5",
+//	  "cwd": "/home/user/project",
+//	  "readonly": {
+//	    "conversation_id": "abc-123",
+//	    "is_subagent": false,
+//	    "parent_id": ""
+//	  }
+//	}
+//
+// The hook should output the same top-level JSON shape (prompt, model, cwd, slug).
+// Only the mutable fields are read from the output; "readonly" is ignored.
+// Empty output means no changes. Unknown fields are ignored.
+//
+// If "slug" is set, it replaces Shelley's async LLM-generated slug for the new
+// conversation. The slug is sanitized via slug.Sanitize before use; if the
+// sanitized form is empty, or the slug collides with an existing one, Shelley
+// falls back to its normal async slug generation.
+type NewConversationHookInput struct {
+	// Mutable fields — the hook may change these.
+	Prompt string `json:"prompt"`
+	Model  string `json:"model"`
+	Cwd    string `json:"cwd"`
+
+	// Readonly context — visible to the hook but changes are ignored.
+	Readonly NewConversationReadonly `json:"readonly"`
+}
+
+// NewConversationReadonly contains context fields the hook can read but not change.
+type NewConversationReadonly struct {
+	ConversationID string `json:"conversation_id"`
+	IsSubagent     bool   `json:"is_subagent"`
+	ParentID       string `json:"parent_id,omitempty"`
+	// Headers is the list of HTTP request headers from the incoming request
+	// that triggered the new conversation, as [name, value] pairs sorted by
+	// name. Multi-valued headers produce one pair per value. Empty for
+	// subagent conversations and other non-HTTP entry points. Header names
+	// are canonicalized by net/http (e.g., "X-Foo-Bar").
+	Headers [][2]string `json:"headers,omitempty"`
+}
+
+// NewConversationHookResult contains the (possibly modified) mutable fields
+// returned from the new-conversation hook.
+type NewConversationHookResult struct {
+	Prompt string
+	Model  string
+	Cwd    string
+	Slug   string
+}
+
+// RunNewConversationHook runs the new-conversation hook from the
+// default user hooks directory ($HOME/.config/shelley/hooks). Tests
+// that want to invoke a hook script from a temp directory should
+// call RunNewConversationHookIn directly, which avoids the
+// process-wide $HOME env var (concurrent tests that share a Server
+// would otherwise race on it).
+func RunNewConversationHook(input NewConversationHookInput) (NewConversationHookResult, error) {
+	return RunNewConversationHookIn(defaultHooksDir(), input)
+}
+
+// RunNewConversationHookIn is the dir-explicit variant of
+// RunNewConversationHook. A non-nil error means the hook failed
+// (non-zero exit, invalid JSON, etc.) and the caller should abort
+// the operation. If no hook is installed, the input values are
+// returned with a nil error.
+func RunNewConversationHookIn(hooksDir string, input NewConversationHookInput) (NewConversationHookResult, error) {
+	original := NewConversationHookResult{
+		Prompt: input.Prompt,
+		Model:  input.Model,
+		Cwd:    input.Cwd,
+	}
+
+	hookPath, err := findHookIn(hooksDir, hookNewConversation)
+	if err != nil {
+		return original, fmt.Errorf("new-conversation hook: %w", err)
+	}
+	if hookPath == "" {
+		return original, nil
+	}
+
+	inputJSON, err := json.Marshal(input)
+	if err != nil {
+		return original, fmt.Errorf("new-conversation hook: marshal input: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, hookPath)
+	cmd.Stdin = strings.NewReader(string(inputJSON))
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return original, fmt.Errorf("new-conversation hook %s failed: %w (stderr: %s)", hookPath, err, stderr.String())
+	}
+
+	output := strings.TrimSpace(stdout.String())
+	if output == "" {
+		// Empty output is fine — hook ran but has no overrides.
+		return original, nil
+	}
+
+	// Parse only the mutable fields from the output.
+	var hookOut struct {
+		Prompt string `json:"prompt"`
+		Model  string `json:"model"`
+		Cwd    string `json:"cwd"`
+		Slug   string `json:"slug"`
+	}
+	if err := json.Unmarshal([]byte(output), &hookOut); err != nil {
+		return original, fmt.Errorf("new-conversation hook %s: invalid JSON output %q: %w", hookPath, output, err)
+	}
+
+	result := original
+	if hookOut.Cwd != "" {
+		result.Cwd = hookOut.Cwd
+	}
+	if hookOut.Prompt != "" {
+		result.Prompt = hookOut.Prompt
+	}
+	if hookOut.Model != "" {
+		result.Model = hookOut.Model
+	}
+	if hookOut.Slug != "" {
+		result.Slug = hookOut.Slug
+	}
+
+	if result != original {
+		slog.Info(
+			"new-conversation hook applied overrides",
+			"cwdChanged", result.Cwd != original.Cwd,
+			"promptChanged", result.Prompt != original.Prompt,
+			"modelChanged", result.Model != original.Model,
+			"slugChanged", result.Slug != original.Slug,
+		)
+	}
+
+	return result, nil
+}
+
+// EndOfTurnHookInput is the JSON data passed to the end-of-turn hook on stdin.
+// It mirrors the notifications.Event shape that drives end-of-turn notifications
+// (notification channels, push notifications, conversation-hook webhooks), so a
+// local hook can react to the same signal.
+type EndOfTurnHookInput struct {
+	Type           string    `json:"type"`
+	ConversationID string    `json:"conversation_id"`
+	Timestamp      time.Time `json:"timestamp"`
+
+	// Payload fields, flattened from notifications.AgentDonePayload.
+	Hostname        string `json:"hostname,omitempty"`
+	Model           string `json:"model,omitempty"`
+	Slug            string `json:"slug,omitempty"`
+	ConversationURL string `json:"conversation_url,omitempty"`
+	VMName          string `json:"vm_name,omitempty"`
+	FinalResponse   string `json:"final_response,omitempty"`
+}
+
+// RunEndOfTurnHookIn runs the end-of-turn hook from an explicit hooks
+// directory. It runs the hook with the event JSON on stdin and ignores
+// stdout. A non-nil error means the hook failed (non-zero exit, etc.);
+// the caller decides whether to propagate it.
+func RunEndOfTurnHookIn(hooksDir string, input EndOfTurnHookInput) error {
+	hookPath, err := findHookIn(hooksDir, hookEndOfTurn)
+	if err != nil {
+		return fmt.Errorf("end-of-turn hook: %w", err)
+	}
+	if hookPath == "" {
+		return nil
+	}
+
+	inputJSON, err := json.Marshal(input)
+	if err != nil {
+		return fmt.Errorf("end-of-turn hook: marshal input: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, hookPath)
+	cmd.Stdin = strings.NewReader(string(inputJSON))
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("end-of-turn hook %s failed: %w (stderr: %s)", hookPath, err, stderr.String())
+	}
+	slog.Info("end-of-turn hook applied", "hook", hookPath, "conversationID", input.ConversationID)
+	return nil
+}
+
+// ChatMessageHookInput is the JSON data passed to the chat-message hook on stdin.
+// It fires when a user posts a follow-up chat message to an existing conversation
+// (i.e., not the first message of a new conversation; that path uses the
+// new-conversation hook). The hook may rewrite the message text; other fields
+// are read-only context.
+type ChatMessageHookInput struct {
+	// Mutable — the hook may rewrite this on stdout.
+	Message string `json:"message"`
+
+	// Readonly context.
+	Readonly ChatMessageReadonly `json:"readonly"`
+}
+
+// ChatMessageReadonly is the readonly context for the chat-message hook.
+type ChatMessageReadonly struct {
+	ConversationID string      `json:"conversation_id"`
+	Model          string      `json:"model"`
+	ReasoningLevel string      `json:"reasoning_level"`
+	Queued         bool        `json:"queued"`
+	Headers        [][2]string `json:"headers,omitempty"`
+}
+
+// RunChatMessageHookIn runs the chat-message hook from an explicit hooks dir.
+// On success with non-empty stdout containing JSON `{"message": ...}`, the
+// hook output replaces the user message. A non-nil error means the hook
+// failed (non-zero exit, invalid JSON, etc.) and the caller should abort
+// the operation. If no hook is installed, the input message is returned
+// unchanged with a nil error.
+func RunChatMessageHookIn(hooksDir string, input ChatMessageHookInput) (string, error) {
+	hookPath, err := findHookIn(hooksDir, hookChatMessage)
+	if err != nil {
+		return input.Message, fmt.Errorf("chat-message hook: %w", err)
+	}
+	if hookPath == "" {
+		return input.Message, nil
+	}
+
+	inputJSON, err := json.Marshal(input)
+	if err != nil {
+		return input.Message, fmt.Errorf("chat-message hook: marshal input: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, hookPath)
+	cmd.Stdin = strings.NewReader(string(inputJSON))
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return input.Message, fmt.Errorf("chat-message hook %s failed: %w (stderr: %s)", hookPath, err, stderr.String())
+	}
+
+	output := strings.TrimSpace(stdout.String())
+	if output == "" {
+		return input.Message, nil
+	}
+
+	var hookOut struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(output), &hookOut); err != nil {
+		return input.Message, fmt.Errorf("chat-message hook %s: invalid JSON output %q: %w", hookPath, output, err)
+	}
+	if hookOut.Message == "" || hookOut.Message == input.Message {
+		return input.Message, nil
+	}
+	slog.Info("chat-message hook applied override", "hook", hookPath, "conversationID", input.Readonly.ConversationID)
+	return hookOut.Message, nil
+}
+
+// validSlashCommandName matches simple slash-command names.
+var validSlashCommandName = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9_-]*$`)
+
+// SlashCommandHookInput is the JSON data passed to a slash-command hook on stdin.
+// A slash command is any user message whose first token (after a leading slash)
+// matches an executable hook at ~/.config/shelley/hooks/slash/<command>.
+type SlashCommandHookInput struct {
+	Command           string `json:"command"`
+	Args              string `json:"args"`
+	RawMessage        string `json:"raw_message"`
+	ConversationID    string `json:"conversation_id"`
+	IsNewConversation bool   `json:"is_new_conversation"`
+	Cwd               string `json:"cwd,omitempty"`
+	Model             string `json:"model,omitempty"`
+	UserEmail         string `json:"user_email,omitempty"`
+}
+
+// SlashCommandHookResult describes the effect of a slash-command hook.
+type SlashCommandHookResult struct {
+	// Handled is true iff a matching hook was found and executed successfully.
+	// If false, callers should treat the message as a normal user message.
+	Handled bool
+	// Message, if non-empty, replaces the original user message. If empty
+	// while Handled is true, the message has been fully handled by the hook
+	// and no agent turn should be triggered.
+	Message string
+	// Err, if non-nil, indicates the hook was found but failed.
+	Err error
+}
+
+// RunSlashCommandHook checks whether input.RawMessage looks like a slash
+// command ("/<name> ...") and, if so, looks up a matching hook at
+// ~/.config/shelley/hooks/slash/<name>. If the hook exists and is executable,
+// it is run with input JSON on stdin; its stdout becomes the replacement
+// user-message text.
+//
+// If the message does not start with a slash, or the first token is not a
+// valid hook name, or no matching hook exists, the result has Handled=false.
+func RunSlashCommandHook(input SlashCommandHookInput) SlashCommandHookResult {
+	msg := strings.TrimLeft(input.RawMessage, " \t\r\n")
+	if !strings.HasPrefix(msg, "/") {
+		return SlashCommandHookResult{}
+	}
+	// Strip leading slash and split into command + args on first whitespace.
+	rest := msg[1:]
+	var cmd, args string
+	if i := strings.IndexAny(rest, " \t\r\n"); i >= 0 {
+		cmd = rest[:i]
+		args = strings.TrimLeft(rest[i:], " \t\r\n")
+	} else {
+		cmd = rest
+	}
+	if !validSlashCommandName.MatchString(cmd) {
+		return SlashCommandHookResult{}
+	}
+
+	hookPath, err := findHook("slash/" + cmd)
+	if err != nil {
+		slog.Error("slash-command hook: findHook failed", "command", cmd, "error", err)
+		return SlashCommandHookResult{}
+	}
+	if hookPath == "" {
+		return SlashCommandHookResult{}
+	}
+
+	input.Command = cmd
+	input.Args = args
+
+	inputJSON, err := json.Marshal(input)
+	if err != nil {
+		return SlashCommandHookResult{Handled: true, Err: fmt.Errorf("marshal slash hook input: %w", err)}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmdRun := exec.CommandContext(ctx, hookPath)
+	cmdRun.Stdin = bytes.NewReader(inputJSON)
+	var stdout, stderr bytes.Buffer
+	cmdRun.Stdout = &stdout
+	cmdRun.Stderr = &stderr
+	// Surface useful context via environment too, for hooks that prefer env
+	// over parsing JSON. The JSON on stdin remains the source of truth.
+	cmdRun.Env = append(
+		os.Environ(),
+		"SHELLEY_SLASH_COMMAND="+cmd,
+		"SHELLEY_SLASH_ARGS="+args,
+		"SHELLEY_CONVERSATION_ID="+input.ConversationID,
+		"SHELLEY_CWD="+input.Cwd,
+		"SHELLEY_MODEL="+input.Model,
+		"SHELLEY_USER_EMAIL="+input.UserEmail,
+	)
+
+	if err := cmdRun.Run(); err != nil {
+		slog.Error("slash-command hook failed", "hook", hookPath, "error", err, "stderr", stderr.String())
+		return SlashCommandHookResult{Handled: true, Err: fmt.Errorf("slash hook %s failed: %w (stderr: %s)", cmd, err, strings.TrimSpace(stderr.String()))}
+	}
+
+	out := stdout.String()
+	slog.Info("slash-command hook applied", "command", cmd, "hook", hookPath, "argsLen", len(args), "replyLen", len(out))
+	return SlashCommandHookResult{Handled: true, Message: out}
+}
+
+// defaultHooksDir is $HOME/.config/shelley/hooks, or "" if $HOME is
+// not set. Resolved on each call so that, e.g., a test that swaps
+// $HOME locally still sees its change.
+func defaultHooksDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".config", "shelley", "hooks")
+}
+
+// findHook is a thin wrapper around findHookIn for the default hooks dir.
+func findHook(name string) (string, error) {
+	return findHookIn(defaultHooksDir(), name)
+}
+
+// findHookIn returns the path to the named hook inside dir if it
+// exists and is executable, or "" if not found. Name may be a single
+// segment ("foo") or a two-segment path ("slash/foo") for namespaced hooks.
+func findHookIn(dir, name string) (string, error) {
+	parts := strings.Split(name, "/")
+	if len(parts) < 1 || len(parts) > 2 {
+		return "", fmt.Errorf("invalid hook name: %q", name)
+	}
+	for _, p := range parts {
+		if p == "" || p == "." || p == ".." || strings.ContainsAny(p, `\`) {
+			return "", fmt.Errorf("invalid hook name: %q", name)
+		}
+	}
+	if dir == "" {
+		return "", nil
+	}
+	hookPath := filepath.Join(append([]string{dir}, parts...)...)
+	info, err := os.Stat(hookPath)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() || info.Mode()&0o111 == 0 {
+		return "", nil
+	}
+	return hookPath, nil
+}
+
+// runHook checks for an executable hook at ~/.config/shelley/hooks/<name> and,
+// if found, runs it with the prompt on stdin. The hook's stdout replaces the
+// prompt. If the hook doesn't exist, the prompt is returned unchanged. If the
+// hook exists but fails, an error is returned.
+func runHook(name, prompt string) (string, error) {
+	return runHookIn(defaultHooksDir(), name, prompt)
+}
+
+func runHookIn(hooksDir, name, prompt string) (string, error) {
+	hookPath, err := findHookIn(hooksDir, name)
+	if err != nil {
+		return "", fmt.Errorf("hook %s: %w", name, err)
+	}
+	if hookPath == "" {
+		return prompt, nil // no hook
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, hookPath)
+	cmd.Stdin = strings.NewReader(prompt)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("hook %s failed: %w (stderr: %s)", hookPath, err, stderr.String())
+	}
+
+	result := stdout.String()
+	if result == "" {
+		return "", fmt.Errorf("hook %s returned empty output", hookPath)
+	}
+
+	slog.Info("hook applied", "name", name, "hook", hookPath, "originalLen", len(prompt), "newLen", len(result))
+	return result, nil
+}
+
+func collectSystemData(workingDir string, integrationSkills []skills.Skill) (*SystemPromptData, error) {
+	wd := workingDir
+	if wd == "" {
+		var err error
+		wd, err = os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get working directory: %w", err)
+		}
+	}
+
+	data := &SystemPromptData{
+		WorkingDirectory: wd,
+	}
+
+	// collectGitInfo shells out to `git rev-parse`; resolve it first so the
+	// codebase and skill walks below can scope to the git root.
+	gitInfo, err := collectGitInfo(wd)
+	if err == nil {
+		data.GitInfo = gitInfo
+	}
+	var gitRoot string
+	if gitInfo != nil {
+		gitRoot = gitInfo.Root
+	}
+
+	// Check if running on exe.dev (cheap stat).
+	data.IsExeDev = isExeDev()
+
+	// The codebase-info and skill walks each traverse the project tree,
+	// stat'ing every directory and (for codebase info) reading guidance files.
+	// They are independent and dominate Hydrate's wall time — measured ~50ms
+	// each under -race on a moderately sized repo, more on loaded CI workers.
+	// Run them concurrently; the slowest of the two becomes the floor instead
+	// of their sum.
+	var (
+		codebaseInfo *CodebaseInfo
+		codebaseErr  error
+		foundSkills  []skills.Skill
+		wg           sync.WaitGroup
+	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		codebaseInfo, codebaseErr = collectCodebaseInfo(wd, gitInfo)
+	}()
+	go func() {
+		defer wg.Done()
+		foundSkills = collectSkills(wd, gitRoot, integrationSkills, skills.Env{ExeDev: data.IsExeDev})
+	}()
+
+	// Run the remaining cheap synchronous probes while the walks are in flight.
+	data.IsSudoAvailable = isSudoAvailable()
+	if data.IsExeDev {
+		if hostname, err := os.Hostname(); err == nil {
+			// If hostname doesn't contain dots, add .exe.xyz suffix
+			if !strings.Contains(hostname, ".") {
+				hostname = hostname + ".exe.xyz"
+			}
+			data.Hostname = hostname
+		}
+		data.DefaultPort = exeDevDefaultPort()
+	}
+
+	wg.Wait()
+	if codebaseErr == nil {
+		data.Codebase = codebaseInfo
+	}
+	data.Skills = foundSkills
+	data.SkillsXML = skills.ToPromptXML(foundSkills)
+
+	return data, nil
+}
+
+func collectGitInfo(dir string) (*GitInfo, error) {
+	// Find git root
+	rootCmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	if dir != "" {
+		rootCmd.Dir = dir
+	}
+	rootOutput, err := rootCmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	root := strings.TrimSpace(string(rootOutput))
+
+	return &GitInfo{
+		Root: root,
+	}, nil
+}
+
+func collectCodebaseInfo(wd string, gitInfo *GitInfo) (*CodebaseInfo, error) {
+	info := &CodebaseInfo{
+		InjectFiles:        []string{},
+		InjectFileContents: make(map[string]string),
+	}
+
+	// Track seen files to avoid duplicates: by resolved path (handles symlinks
+	// and case-insensitive filesystems) and by content (handles copies).
+	seenFiles := make(map[string]bool)
+	seenContents := make(map[string]bool)
+
+	// Check for user-level agent instructions at the candidate user-level
+	// AGENTS.md locations (see userAgentsMdCandidates); nil if there is no
+	// home directory, in which case the loop simply doesn't run.
+	for _, f := range userAgentsMdCandidates() {
+		canonical := resolveAndNormalize(f)
+		if seenFiles[canonical] {
+			continue
+		}
+		if content, err := os.ReadFile(f); err == nil && len(content) > 0 {
+			contentKey := string(content)
+			if seenContents[contentKey] {
+				continue
+			}
+			info.InjectFiles = append(info.InjectFiles, f)
+			info.InjectFileContents[f] = contentKey
+			seenFiles[canonical] = true
+			seenContents[contentKey] = true
+		}
+	}
+
+	// Determine the root directory to search
+	searchRoot := wd
+	if gitInfo != nil {
+		searchRoot = gitInfo.Root
+	}
+
+	// Find root-level guidance files (case-insensitive)
+	rootGuidanceFiles := findGuidanceFilesInDir(searchRoot)
+	for _, file := range rootGuidanceFiles {
+		canonical := resolveAndNormalize(file)
+		if seenFiles[canonical] {
+			continue
+		}
+
+		content, err := os.ReadFile(file)
+		if err == nil && len(content) > 0 {
+			contentKey := string(content)
+			if seenContents[contentKey] {
+				continue
+			}
+			seenFiles[canonical] = true
+			seenContents[contentKey] = true
+			info.InjectFiles = append(info.InjectFiles, file)
+			info.InjectFileContents[file] = contentKey
+		}
+	}
+
+	// If working directory is different from root, also check working directory
+	if wd != searchRoot {
+		wdGuidanceFiles := findGuidanceFilesInDir(wd)
+		for _, file := range wdGuidanceFiles {
+			canonical := resolveAndNormalize(file)
+			if seenFiles[canonical] {
+				continue
+			}
+
+			content, err := os.ReadFile(file)
+			if err == nil && len(content) > 0 {
+				contentKey := string(content)
+				if seenContents[contentKey] {
+					continue
+				}
+				seenFiles[canonical] = true
+				seenContents[contentKey] = true
+				info.InjectFiles = append(info.InjectFiles, file)
+				info.InjectFileContents[file] = contentKey
+			}
+		}
+	}
+
+	// Find subdirectory guidance files for the system prompt listing
+	info.SubdirGuidanceFiles = findSubdirGuidanceFiles(searchRoot)
+
+	return info, nil
+}
+
+func findGuidanceFilesInDir(dir string) []string {
+	// Read directory entries to handle case-insensitive file systems
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	var found []string
+	seen := make(map[string]bool)
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		lowerName := strings.ToLower(entry.Name())
+		if isGuidanceFile(lowerName) && lowerName != "readme.md" && !seen[lowerName] {
+			seen[lowerName] = true
+			found = append(found, filepath.Join(dir, entry.Name()))
+		}
+	}
+	return found
+}
+
+// isGuidanceFile returns true if the lowercased filename is a recognized guidance file.
+func isGuidanceFile(lowerName string) bool {
+	switch lowerName {
+	case "agents.md", "agent.md", "claude.md", "dear_llm.md", "readme.md":
+		return true
+	}
+	return false
+}
+
+// findSubdirGuidanceFiles returns guidance files in subdirectories of root (not root itself).
+func findSubdirGuidanceFiles(root string) []string {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var found []string
+	seen := make(map[string]bool)
+
+	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if ctx.Err() != nil {
+			return filepath.SkipAll
+		}
+		if err != nil {
+			return nil // Continue on errors
+		}
+		if info.IsDir() {
+			// Skip hidden directories and common ignore patterns
+			if strings.HasPrefix(info.Name(), ".") || info.Name() == "node_modules" || info.Name() == "vendor" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		// Only count files in subdirectories, not root
+		if filepath.Dir(path) != root && isGuidanceFile(strings.ToLower(info.Name())) {
+			lowerPath := strings.ToLower(path)
+			if !seen[lowerPath] {
+				seen[lowerPath] = true
+				found = append(found, path)
+			}
+		}
+		return nil
+	})
+	return found
+}
+
+func isExeDev() bool {
+	_, err := os.Stat("/exe.dev")
+	return err == nil
+}
+
+// exeDevDefaultPort returns the live HTTP proxy port for this VM, fetched
+// via the default "reflection" integration. Returns 0 if unavailable
+// (integration disabled/detached, network error, etc.).
+var exeDevDefaultPortHTTPClient = http.DefaultClient
+
+func exeDevDefaultPort() int {
+	env, err := exeenv.Current()
+	if err != nil {
+		return 0
+	}
+	return exeDevDefaultPortIn(env)
+}
+
+func exeDevDefaultPortIn(env exeenv.Environment) int {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", env.ReflectionURL()+"/default_port", nil)
+	if err != nil {
+		return 0
+	}
+	resp, err := exeDevDefaultPortHTTPClient.Do(req)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0
+	}
+	var body struct {
+		DefaultPort int `json:"default_port"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return 0
+	}
+	return body.DefaultPort
+}
+
+// collectSkills discovers skills from default directories, project .skills dirs,
+// the project tree, integration-discovered skills, and built-in skills. See
+// skills.ListAllWithIntegrations for precedence rules. Skills with a `when:`
+// clause are filtered against env.
+func collectSkills(workingDir, gitRoot string, integrationSkills []skills.Skill, env skills.Env) []skills.Skill {
+	return skills.Filter(skills.ListAllWithIntegrations(workingDir, gitRoot, integrationSkills), env)
+}
+
+// resolveAndNormalize returns a canonical lowercase path for dedup.
+// It resolves symlinks and normalizes to lowercase for case-insensitive FS.
+func resolveAndNormalize(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+	return strings.ToLower(path)
+}
+
+func isSudoAvailable() bool {
+	cmd := exec.Command("sudo", "-n", "id")
+	_, err := cmd.CombinedOutput()
+	return err == nil
+}
+
+// SubagentSystemPromptData contains data for subagent system prompts (minimal subset).
+type SubagentSystemPromptData struct {
+	WorkingDirectory string
+	GitInfo          *GitInfo
+	ShelleyDBPath    string
+	ConversationID   string
+	// MessageParent is set for delegated subagents, which have the
+	// message_parent tool.
+	MessageParent bool
+	SkillsXML     string // XML block for available skills
+	Skills        []skills.Skill
+	MCPServers    []MCPServerInfo // Registered MCP servers, for the mcp skill
+	// ExeDevIntegrations are the attached exe-dev integrations.
+	ExeDevIntegrations []ExeDevIntegrationInfo
+}
+
+// MCPServersXML renders the registered MCP servers for the subagent prompt.
+func (d *SubagentSystemPromptData) MCPServersXML() string { return mcpServersXML(d.MCPServers) }
+
+// ExeDevIntegrationsXML renders the attached exe-dev integrations for the
+// subagent prompt.
+func (d *SubagentSystemPromptData) ExeDevIntegrationsXML() string {
+	return exeDevIntegrationsXML(d.ExeDevIntegrations)
+}
+
+// GenerateSubagentSystemPrompt generates a minimal system prompt for subagent conversations.
+func GenerateSubagentSystemPrompt(workingDir, parentConversationID string) (string, error) {
+	prompt, _, err := generateSubagentSystemPromptData(workingDir, parentConversationID, true, nil, nil, nil)
+	return prompt, err
+}
+
+func generateSubagentSystemPromptWithIntegrationSkills(workingDir string, messageParent bool, integrationSkills []skills.Skill, mcpServers []MCPServerInfo, exeDev []ExeDevIntegrationInfo) (string, []skills.Skill, error) {
+	return generateSubagentSystemPromptData(workingDir, "", messageParent, integrationSkills, mcpServers, exeDev)
+}
+
+func generateSubagentSystemPromptData(workingDir, parentConversationID string, messageParent bool, integrationSkills []skills.Skill, mcpServers []MCPServerInfo, exeDev []ExeDevIntegrationInfo) (string, []skills.Skill, error) {
+	wd := workingDir
+	if wd == "" {
+		var err error
+		wd, err = os.Getwd()
+		if err != nil {
+			return "", nil, fmt.Errorf("failed to get working directory: %w", err)
+		}
+	}
+
+	data := &SubagentSystemPromptData{
+		WorkingDirectory:   wd,
+		ShelleyDBPath:      DBPath,
+		ConversationID:     parentConversationID,
+		MessageParent:      messageParent,
+		MCPServers:         mcpServers,
+		ExeDevIntegrations: exeDev,
+	}
+
+	// Try to collect git info
+	gitInfo, err := collectGitInfo(wd)
+	if err == nil {
+		data.GitInfo = gitInfo
+	}
+
+	// Collect skills
+	gitRoot := ""
+	if gitInfo != nil {
+		gitRoot = gitInfo.Root
+	}
+	data.Skills = collectSkills(wd, gitRoot, integrationSkills, skills.Env{ExeDev: isExeDev()})
+	data.SkillsXML = skills.ToPromptXML(data.Skills)
+
+	tmpl, err := template.New("subagent_system_prompt").Parse(subagentSystemPromptTemplate)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to parse subagent template: %w", err)
+	}
+
+	var buf strings.Builder
+	err = tmpl.Execute(&buf, data)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to execute subagent template: %w", err)
+	}
+
+	prompt := collapseBlankLines(buf.String())
+	prompt, err = runHook(hookSystemPrompt, prompt)
+	if err != nil {
+		return "", nil, err
+	}
+	return prompt, data.Skills, nil
+}

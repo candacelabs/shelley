@@ -1,0 +1,48 @@
+{
+  "_README": "This file is managed by LazyCue (see shelley/lazycue). Do NOT edit by hand — it is the cached, machine-generated DSL for a self-healing browser test. To change behavior, edit the test description and re-run LazyCue.",
+  "description": "Navigate to /new. Use an eval step to call window.__recordingMock.reset(), set window.__recordingMock.dataOnlyOnStop=true, and return \"ready\". Click the voice recording button (data-testid \"voice-button\"). Wait for eval \"String(window.__recordingMock.recorderStarts)\" to equal \"1\". Without asserting on the transient pre-roll state, click the recording stop button (data-testid \"recording-stop-button\"). Wait for the recording panel (data-testid \"recording-panel\") to close. Assert the durable result with eval \"(function(){var m=window.__recordingMock;var b=m.uploadedBodies[0]||[];var tail=String.fromCharCode.apply(null,b.slice(4));return m.uploadCount===1\u0026\u0026m.chatCount===1\u0026\u0026m.recorderStops===1\u0026\u0026m.stoppedTracks\u003e0\u0026\u0026b[0]===26\u0026\u0026b[1]===69\u0026\u0026b[2]===223\u0026\u0026b[3]===163\u0026\u0026tail==='encodedlast'?'pass':'uploads='+m.uploadCount+' chats='+m.chatCount+' stops='+m.recorderStops+' tracks='+m.stoppedTracks+' bytes='+JSON.stringify(b);})()\" expecting \"pass\".",
+  "version": 1,
+  "steps": [
+    {
+      "action": "navigate",
+      "url": "/new"
+    },
+    {
+      "action": "eval",
+      "expression": "window.__recordingMock.reset(); window.__recordingMock.dataOnlyOnStop = true; 'ready'",
+      "expect": "ready"
+    },
+    {
+      "action": "click",
+      "selector": "[data-testid=\"voice-button\"]"
+    },
+    {
+      "action": "eval",
+      "expression": "String(window.__recordingMock.recorderStarts)",
+      "expect": "1"
+    },
+    {
+      "action": "click",
+      "selector": "[data-testid=\"recording-stop-button\"]"
+    },
+    {
+      "action": "wait_hidden",
+      "selector": "[data-testid=\"recording-panel\"]",
+      "timeout": "15s"
+    },
+    {
+      "action": "eval",
+      "expression": "(function(){var m=window.__recordingMock;var b=m.uploadedBodies[0]||[];var tail=String.fromCharCode.apply(null,b.slice(4));return m.uploadCount===1\u0026\u0026m.chatCount===1\u0026\u0026m.recorderStops===1\u0026\u0026m.stoppedTracks\u003e0\u0026\u0026b[0]===26\u0026\u0026b[1]===69\u0026\u0026b[2]===223\u0026\u0026b[3]===163\u0026\u0026tail==='encodedlast'?'pass':'uploads='+m.uploadCount+' chats='+m.chatCount+' stops='+m.recorderStops+' tracks='+m.stoppedTracks+' bytes='+JSON.stringify(b);})()",
+      "expect": "pass"
+    }
+  ],
+  "metadata": {
+    "created_at": "2026-09-29T22:37:05.229709974Z",
+    "hostname": "phil-dev",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 40237,
+    "output_tokens": 1752,
+    "estimated_cost_usd": 0.146991,
+    "mode": "generated"
+  }
+}

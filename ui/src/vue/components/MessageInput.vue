@@ -1,0 +1,1762 @@
+<!-- Vue port of components/MessageInput.tsx. The composer: textarea,
+     send/queue split button, attach, drag/paste upload, inline recording.
+     PRESERVES EXACTLY the e2e contract (file-upload.spec, queue-messages.spec,
+     smoke, conversation): data-testid message-input, send-button,
+     send-options-button, queue-option, queued-badge, cancel-queued,
+     attach-button, voice-button, message-attachments; aria-label "Message
+     input", "Send message", "Send options"; classes .message-input-container,
+     .message-attachment, .drag-overlay, input.message-input-hidden. The
+     message-input testid/aria are also queried by utils/focusMessageInput.ts.
+
+     Public API (consumed by ChatInterface):
+       Props:
+         onSend?            — not a prop; emitted as `send` (see emits)
+       Emits:
+         (e: "send", message: string): Promise<void> | void
+         (e: "queue", message: string): Promise<void> | void
+         (e: "focus"): void
+         (e: "clear-injected-text"): void
+         (e: "draft-change", value: string): void
+         (e: "draft-send-started"): void
+         (e: "draft-cleared"): void
+         (e: "recording-unsent", path: string, error: unknown): void
+         (e: "recording-unavailable"): void
+       Because send/queue are awaited in React (onSend/onQueue return
+       Promises), the parent passes async handlers via the `onSend`/`onQueue`
+       *function props* below instead of pure emits — Vue emits can't be
+       awaited. We therefore accept them as props (mirroring React) AND expose
+       the matching emit names for non-awaiting listeners. ChatInterface should
+       use the `:on-send` / `:on-queue` function props. -->
+<template>
+  <div
+    :class="`message-input-container ${isDraggingOver ? 'drag-over' : ''} ${isShellMode ? 'shell-mode' : ''} ${showSlashMenu || showFileMenu || showSkillMenu ? 'slash-menu-open' : ''}`"
+    @dragover="handleDragOver"
+    @dragenter="handleDragEnter"
+    @dragleave="handleDragLeave"
+    @drop="handleDrop"
+  >
+    <div v-if="isDraggingOver" class="drag-overlay">
+      <div class="drag-overlay-content">{{ t("dropFilesHere") }}</div>
+    </div>
+    <slot name="call" />
+    <!-- Teleport moves the same recorder; navigation must never remount it. -->
+    <Teleport to="body" :disabled="!recordingFloating">
+      <div
+        v-if="recordingActive"
+        :class="{ 'recording-floating': recordingFloating }"
+        :data-testid="recordingFloating ? 'recording-floating' : 'recording-inline'"
+      >
+        <button
+          v-if="recordingFloating"
+          type="button"
+          class="recording-return"
+          data-testid="recording-return-button"
+          :disabled="!!recordingSubmission?.destinationError"
+          @click="returnToRecording"
+        >
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 10-5-5 5-5M4 5h10a6 6 0 0 1 0 12h-3" />
+          </svg>
+          {{ t("recordingReturn") }}
+        </button>
+        <RecordingPanel
+          :initial-mode="recordingSubmission!.mode"
+          :initial-microphone="recordingSubmission?.microphone"
+          :initial-screen="recordingSubmission?.screen"
+          :preserved-text="recordingSubmission?.message"
+          :destination-error="recordingSubmission?.destinationError"
+          :submitting="recordingSubmission?.submitting"
+          :on-complete="completionFor(recordingSubmission!)"
+          :on-upload-failure="reportUnsentRecording"
+          @close="closeRecording"
+        />
+      </div>
+    </Teleport>
+    <form
+      v-if="!recordingActive || recordingFloating"
+      v-show="!composerHidden"
+      class="message-input-form"
+      @submit="handleSubmit"
+    >
+      <input
+        ref="fileInputRef"
+        type="file"
+        class="message-input-hidden"
+        multiple
+        aria-hidden="true"
+        @change="handleFileSelect"
+      />
+      <div
+        v-if="attachments.length > 0 || selectedSkills.length > 0"
+        class="message-attachments"
+        data-testid="message-attachments"
+      >
+        <span
+          v-for="skill in selectedSkills"
+          :key="skill.name"
+          class="skill-chip"
+          data-testid="skill-chip"
+        >
+          <span class="skill-chip-label truncate" :title="skill.description">{{ skill.name }}</span>
+          <button
+            type="button"
+            class="skill-chip-x"
+            :aria-label="`Remove skill ${skill.name}`"
+            @click="removeSelectedSkill(skill.name)"
+          >
+            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+          </button>
+        </span>
+        <div
+          v-for="a in attachments"
+          :key="a.id"
+          :class="`message-attachment message-attachment-${a.status}`"
+          :title="a.status === 'error' ? `${a.name}: ${a.error}` : a.name"
+        >
+          <img
+            v-if="a.isImage && a.previewUrl"
+            :src="a.previewUrl"
+            :alt="a.name"
+            class="message-attachment-thumb"
+          />
+          <div v-else class="message-attachment-file">
+            <svg
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="20"
+              height="20"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"
+              />
+              <polyline points="14 2 14 8 20 8" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+            <span class="message-attachment-name">{{ a.name }}</span>
+          </div>
+          <div v-if="a.status === 'uploading'" class="message-attachment-overlay">
+            <div class="spinner spinner-small"></div>
+          </div>
+          <div v-if="a.status === 'error'" class="message-attachment-error-badge">!</div>
+          <button
+            type="button"
+            class="message-attachment-remove"
+            :aria-label="`Remove ${a.name}`"
+            @click="removeAttachment(a.id)"
+          >
+            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div class="textarea-wrapper">
+        <Teleport to="body" :disabled="!mobileSkillPicker">
+          <div
+            v-if="showSkillMenu && mobileSkillPicker"
+            class="skill-picker-backdrop"
+            @click="dismissSkills()"
+          ></div>
+          <div
+            v-if="showSkillMenu"
+            ref="skillMenuRef"
+            class="slash-command-menu skill-picker"
+            :class="{ 'skill-picker-mobile': mobileSkillPicker }"
+            :style="mobileSkillPicker ? {
+              top: `${skillViewport.top + 12}px`,
+              height: `${skillViewport.height - 12}px`,
+            } : undefined"
+            :role="mobileSkillPicker ? 'dialog' : undefined"
+            :aria-modal="mobileSkillPicker ? true : undefined"
+            :aria-label="mobileSkillPicker ? 'Choose a skill' : undefined"
+            data-testid="skill-picker"
+          >
+            <div class="skill-picker-head">
+              <b class="font-medium">Skills</b>
+              <button
+                v-if="mobileSkillPicker"
+                type="button"
+                class="skill-picker-close"
+                aria-label="Close skills"
+                @click="closeSkillPicker"
+              >
+                <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
+              <span v-else>↑↓ choose · Enter add · Esc close</span>
+            </div>
+            <input
+              v-if="mobileSkillPicker"
+              :value="skillSearchQuery"
+              class="skill-picker-search"
+              type="search"
+              placeholder="Find a skill"
+              aria-label="Find a skill"
+              autocomplete="off"
+              @input="setSkillSearch"
+              @keydown.enter.prevent="chooseSkill(skillSelected)"
+              @keydown.esc="closeSkillPicker"
+            />
+            <div v-if="skillLoading || skillError" class="file-completion-status" role="status">
+              {{ skillError || "Loading skills…" }}
+            </div>
+            <div
+              v-else-if="!skillMatches.length"
+              class="file-completion-status"
+              role="status"
+            >
+              No matching skills
+            </div>
+            <div v-else class="skill-picker-split">
+              <div :id="skillMenuId" role="listbox" aria-label="Skills" class="skill-picker-names">
+                <button
+                  v-for="(item, index) in skillMatches"
+                  :id="`${skillMenuId}-${index}`"
+                  :key="item.name"
+                  type="button"
+                  tabindex="-1"
+                  :class="['slash-command-item', { selected: index === skillSelected }]"
+                  role="option"
+                  :aria-selected="index === skillSelected"
+                  :aria-label="`${item.name}: ${item.description}`"
+                  @mousedown.prevent
+                  @mouseenter="skillSelected = index"
+                  @click="chooseSkill(index)"
+                >
+                  <span class="slash-command-name">{{ item.name }}</span>
+                  <span v-if="mobileSkillPicker" class="skill-picker-description">{{ item.description }}</span>
+                  <span v-if="mobileSkillPicker" class="skill-picker-add" aria-hidden="true">
+                    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" d="M12 5v14M5 12h14" /></svg>
+                  </span>
+                </button>
+              </div>
+              <div
+                v-if="!mobileSkillPicker && skillMatches[skillSelected]"
+                class="skill-picker-detail" aria-hidden="true">
+                <div class="skill-picker-detail-name">{{ skillMatches[skillSelected].name }}</div>
+                <p>{{ skillMatches[skillSelected].description }}</p>
+                <div class="skill-picker-source">
+                  {{
+                    [skillMatches[skillSelected].origin, skillMatches[skillSelected].source_path]
+                      .filter(Boolean)
+                      .join(" · ")
+                  }}
+                </div>
+              </div>
+            </div>
+          </div>
+        </Teleport>
+
+        <div
+          v-if="showFileMenu"
+          ref="fileMenuRef"
+          class="slash-command-menu file-completion-menu"
+          data-testid="file-completion-menu"
+        >
+          <div
+            v-if="fileError || (fileLoading && !fileMatches.length)"
+            class="file-completion-status"
+            role="status"
+          >
+            {{ fileError || "Searching files and folders…" }}
+          </div>
+          <div
+            :id="fileMenuId"
+            class="file-completion-list"
+            role="listbox"
+            aria-label="Files and folders"
+          >
+            <button
+              v-for="(item, index) in fileMatches"
+              :id="`${fileMenuId}-${index}`"
+              :key="item.path"
+              type="button"
+              :class="`file-completion-item grp-row${index === fileSelected ? ' grp-row-active' : ''}`"
+              role="option"
+              :aria-selected="index === fileSelected"
+              :aria-label="item.is_dir ? `${item.path} (folder)` : item.path"
+              :data-kind="item.is_dir ? 'folder' : 'file'"
+              :title="item.path"
+              @mousedown.prevent
+              @mouseenter="fileSelected = index"
+              @click="chooseFile(index)"
+            >
+              <svg
+                class="grp-icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.5"
+                aria-hidden="true"
+              >
+                <path
+                  v-if="item.is_dir"
+                  d="M3 7V5a2 2 0 0 1 2-2h5l3 3h6a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"
+                />
+                <path
+                  v-else
+                  d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6Zm0 0v6h6"
+                />
+              </svg>
+              <span class="grp-main">
+                <PathText
+                  class="grp-path"
+                  :text="item.path"
+                  :segments="highlightSegments(item.path, item.matched_indexes)"
+                />
+                <span v-if="item.snippet" class="ff-snippet" :title="item.snippet">
+                  <span class="ff-snippet-line">{{ item.line }}:</span>
+                  <HighlightedText :text="item.snippet" :positions="item.snippet_matched_indexes" />
+                </span>
+              </span>
+            </button>
+          </div>
+          <div
+            v-if="fileGrepPending && !fileLoading && !fileError"
+            class="ff-grep-pending file-completion-grep-pending"
+            role="status"
+          >
+            Searching file contents…
+          </div>
+          <div
+            v-else-if="!fileLoading && !fileMatches.length && !fileError"
+            class="file-completion-status"
+            role="status"
+          >
+            No matching files or folders
+          </div>
+        </div>
+        <div
+          v-if="showSlashMenu"
+          ref="slashMenuRef"
+          class="slash-command-menu"
+          role="listbox"
+          aria-label="Slash commands"
+          data-testid="slash-command-menu"
+        >
+          <button
+            v-for="(item, index) in slashSuggestions"
+            :key="item.command"
+            type="button"
+            :class="`slash-command-item${index === slashMenuSelectedIndex ? ' selected' : ''}`"
+            role="option"
+            :aria-selected="index === slashMenuSelectedIndex"
+            @mousedown.prevent
+            @mouseenter="slashMenuSelectedIndex = index"
+            @click="chooseSlashCommand(index)"
+          >
+            <span class="slash-command-name">{{ item.command }}</span>
+            <span class="slash-command-description">{{ item.description }}</span>
+          </button>
+        </div>
+        <div
+          v-if="showModelArgMenu"
+          ref="slashMenuRef"
+          class="slash-command-menu"
+          role="listbox"
+          aria-label="Model options"
+          data-testid="model-arg-menu"
+        >
+          <button
+            v-for="(item, index) in modelArgSuggestions"
+            :key="`${item.kind}:${item.value}`"
+            type="button"
+            :class="`slash-command-item${index === slashMenuSelectedIndex ? ' selected' : ''}`"
+            role="option"
+            :aria-selected="index === slashMenuSelectedIndex"
+            @mousedown.prevent
+            @mouseenter="slashMenuSelectedIndex = index"
+            @click="chooseModelArg(index)"
+          >
+            <span class="slash-command-name">{{ item.value }}</span>
+            <span class="slash-command-description">{{
+              item.kind === "model" ? "model" : "reasoning level"
+            }}</span>
+          </button>
+        </div>
+        <div
+          v-if="isShellMode"
+          class="shell-mode-indicator"
+          title="This will run as a shell command"
+        >
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <polyline points="4 17 10 11 4 5" />
+            <line x1="12" y1="19" x2="20" y2="19" />
+          </svg>
+        </div>
+        <textarea
+          ref="textareaRef"
+          :value="message"
+          :placeholder="placeholderText"
+          class="message-textarea"
+          :disabled="isDisabled"
+          :rows="initialRows ?? 1"
+          aria-label="Message input"
+          data-testid="message-input"
+          :aria-autocomplete="showSkillMenu || showFileMenu ? 'list' : undefined"
+          :aria-controls="showSkillMenu ? skillMenuId : showFileMenu ? fileMenuId : undefined"
+          :aria-activedescendant="
+            showSkillMenu && skillMatches.length
+              ? `${skillMenuId}-${skillSelected}`
+              : showFileMenu && fileMatches.length
+                ? `${fileMenuId}-${fileSelected}`
+                : undefined
+          "
+          @input="onTextareaInput"
+          @select="syncFileSelection"
+          @click="syncFileSelection"
+          @keyup="syncFileSelection"
+          @blur="onTextareaBlur"
+          @keydown="handleKeyDown"
+          @paste="handlePaste"
+          @focus="onTextareaFocus"
+        />
+      </div>
+      <div class="message-controls-row">
+        <div v-if="$slots.status" class="message-controls-status-slot"><slot name="status" /></div>
+        <button
+          type="button"
+          :disabled="isDisabled"
+          class="message-attach-btn"
+          :aria-label="t('attachFile')"
+          data-testid="attach-button"
+          @click="handleAttachClick"
+        >
+          <svg
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            viewBox="0 0 24 24"
+            width="20"
+            height="20"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
+            />
+          </svg>
+        </button>
+        <RecordButton
+          v-if="mediaRecordingAvailable && !voiceActive"
+          :can-record-audio="canRecordAudio"
+          :screen-available="screenRecordingAvailable"
+          @record="beginRecording"
+        />
+        <div ref="queueMenuRef" class="message-send-wrapper">
+          <!-- Slack-style split button: [Send | ▾] — always same width -->
+          <div v-if="showQueueOption && hasQueueHandler" class="send-split-btn">
+            <button
+              type="submit"
+              :disabled="!canSubmit"
+              class="send-split-main"
+              :aria-label="t('sendMessage')"
+              data-testid="send-button"
+            >
+              <div v-if="isDisabled || submitting" class="flex items-center justify-center">
+                <div class="spinner spinner-small message-send-spinner-white"></div>
+              </div>
+              <svg v-else fill="currentColor" viewBox="0 0 24 24" width="18" height="18">
+                <path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z" />
+              </svg>
+            </button>
+            <div class="send-split-divider" />
+            <button
+              type="button"
+              :disabled="!canSubmit || !canQueue"
+              :class="`send-split-chevron${canQueue ? '' : ' send-split-chevron-inactive'}`"
+              aria-label="Send options"
+              data-testid="send-options-button"
+              @click="showQueueMenu = !showQueueMenu"
+            >
+              <svg fill="currentColor" viewBox="0 0 24 24" width="14" height="14">
+                <path d="M7 10l5 5 5-5z" />
+              </svg>
+            </button>
+            <div v-if="showQueueMenu && canQueue" class="queue-menu">
+              <button
+                type="button"
+                class="queue-menu-item"
+                data-testid="queue-option"
+                @click="handleQueueMessage()"
+              >
+                <!-- Clock icon — "queue for later" -->
+                <svg
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  viewBox="0 0 24 24"
+                  width="16"
+                  height="16"
+                >
+                  <circle cx="12" cy="12" r="10" />
+                  <polyline points="12 6 12 12 16 14" />
+                </svg>
+                Queue after agent finishes
+              </button>
+            </div>
+          </div>
+          <!-- Regular round send button (new conversation, no queue possible) -->
+          <button
+            v-else
+            type="submit"
+            :disabled="!canSubmit"
+            class="message-send-btn"
+            :aria-label="t('sendMessage')"
+            data-testid="send-button"
+          >
+            <div v-if="isDisabled || submitting" class="flex items-center justify-center">
+              <div class="spinner spinner-small message-send-spinner-white"></div>
+            </div>
+            <svg v-else fill="currentColor" viewBox="0 0 24 24" width="20" height="20">
+              <path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </form>
+  </div>
+</template>
+
+<script setup lang="ts">
+import PathText from "./PathText.vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowReactive, shallowRef, useId, watch } from "vue";
+import { useFileCompletion } from "../composables/fileCompletion";
+import { useSkillCompletion } from "../composables/skillCompletion";
+import type { SkillDescriptor } from "../../services/api";
+import { useI18n } from "../composables/i18n";
+import { pickPlaceholderHint } from "../../utils/placeholderHints";
+import HighlightedText from "./HighlightedText.vue";
+import { highlightSegments } from "../../utils/fileSearch";
+import { SLASH_COMMANDS, slashCommandsForConversation } from "../../utils/slashCommands";
+import { composerDispatch, composerSessionID, guardComposerClear } from "./composerDispatch";
+import { isImeComposing } from "../../utils/imeComposing";
+import RecordButton from "./RecordButton.vue";
+import RecordingPanel from "./RecordingPanel.vue";
+import type { RecordingDestination, RecordingMode, RecordingPreparation } from "./recordingDestination";
+import { focusMessageInputIfUnfocused } from "../../utils/focusMessageInput";
+import {
+  CONCRETE_THINKING_LEVELS,
+  supportedThinkingLevels,
+  type ReasoningModelCapabilities,
+} from "./thinkingLevel";
+
+interface Attachment {
+  id: string;
+  name: string;
+  isImage: boolean;
+  /** Object URL for image preview thumbnail; revoked on remove/unmount. */
+  previewUrl?: string;
+  status: "uploading" | "ready" | "error";
+  /** Server-returned path; only present once status === "ready". */
+  path?: string;
+  error?: string;
+}
+
+interface AttachmentSession {
+  attachments: Attachment[];
+}
+
+const props = withDefaults(
+  defineProps<{
+    /** Async send handler (awaited). Mirrors React's onSend prop. */
+    onSend: (message: string, skills?: string[]) => Promise<void> | void;
+    voiceActive?: boolean;
+    /** Leave the persistent call slot available when browsing an archive. */
+    composerHidden?: boolean;
+    /** Bind the original destination; the recorder starts while it resolves. */
+    onStartRecording: (text: string) => RecordingPreparation;
+    /** Archived conversations hide the composer, but not an active recording. */
+    recordingInlineAvailable?: boolean;
+    /** Async queue handler (awaited). Mirrors React's onQueue prop. */
+    onQueue?: (message: string, skills?: string[]) => Promise<void> | void;
+    /** Show the split send button with queue chevron (e.g. when in a conversation) */
+    showQueueOption?: boolean;
+    /** Whether queuing is available right now (agent is working) */
+    canQueue?: boolean;
+    disabled?: boolean;
+    autoFocus?: boolean;
+    injectedText?: string;
+    /** Programmatic composer seed. When the parent's draft reconciliation
+     * decides the composer text must change (conversation switch, server echo
+     * that wins), it pushes a new seed object here. Wrapped in an object so
+     * re-seeding the same string still fires the watch. Deliberately NOT the
+     * live keystroke value: the parent must not re-render per keystroke (that
+     * made typing crawl in huge conversations); it tracks live text via the
+     * draft-change emit instead. */
+    draftSeed?: { value: string } | null;
+    initialRows?: number;
+    /** Id of the focused conversation, used to scope pending attachments. */
+    conversationId?: string | null;
+    /** Id assigned while the current new-conversation session is being saved. */
+    lazyDraftId?: string | null;
+    /** Ready models (id + reasoning capabilities), used to autocomplete the
+     * /model command arguments with only the levels the target model accepts. */
+    modelOptions?: ({ id: string } & ReasoningModelCapabilities)[];
+    /** Currently selected model id; the levels offered for "/model <level>"
+     * (no model argument) are the ones this model accepts. */
+    currentModelId?: string;
+    /** Working directory for server-side @ filename completion. */
+    cwd?: string;
+    /** Child conversations cannot start nested BTW readers. */
+    isChildConversation?: boolean;
+  }>(),
+  {
+    recordingInlineAvailable: true,
+    voiceActive: false,
+    showQueueOption: false,
+    canQueue: false,
+    disabled: false,
+    autoFocus: false,
+    initialRows: 1,
+    isChildConversation: false,
+  },
+);
+
+const emit = defineEmits<{
+  (e: "focus"): void;
+  (e: "open-terminal"): void;
+  (e: "clear-injected-text"): void;
+  (e: "draft-change", value: string): void;
+  (e: "draft-send-started"): void;
+  (e: "draft-cleared"): void;
+  (e: "recording-unsent", path: string, error: unknown): void;
+  (e: "recording-unavailable"): void;
+}>();
+
+const { t } = useI18n();
+
+const hasQueueHandler = computed(() => props.onQueue !== undefined);
+
+const message = ref(props.draftSeed?.value ?? "");
+type RecordingSubmission = {
+  mode: RecordingMode;
+  microphone?: Promise<MediaStream>;
+  screen?: Promise<MediaStream>;
+  preparation: RecordingPreparation;
+  destination: Promise<RecordingDestination>;
+  destinationError?: string;
+  submitting?: boolean;
+  // The recorder renders inline in its origin until the destination resolves,
+  // unless the user has navigated away meanwhile.
+  origin: string | null;
+  detached?: boolean;
+  conversationId?: string;
+  message: string;
+  context: string;
+  attachmentIDs: string[];
+  attachmentSession: AttachmentSession;
+};
+const recordingSubmission = shallowRef<RecordingSubmission | null>(null);
+let disposed = false;
+const recordingActive = computed(() => !!recordingSubmission.value);
+const recordingFloating = computed(() => {
+  const submission = recordingSubmission.value;
+  if (!submission) return false;
+  if (!props.recordingInlineAvailable) return true;
+  const target = submission.conversationId ?? (submission.detached ? undefined : submission.origin);
+  return (props.conversationId ?? null) !== target;
+});
+// setMessage mirrors the React controlled-value path: surfaces every change via
+// draft-change so the parent can persist it.
+function setMessage(next: string | ((prev: string) => string)) {
+  const prev = message.value;
+  const value = typeof next === "function" ? next(prev) : next;
+  if (value !== prev) emit("draft-change", value);
+  message.value = value;
+}
+
+// Sync programmatic seeds (e.g. switching between draft conversations).
+watch(
+  () => props.draftSeed,
+  (seed) => {
+    if (seed != null) message.value = seed.value;
+  },
+);
+
+const submitting = ref(false);
+const attachmentSessions = new Map<string | null, AttachmentSession>();
+let activeAttachmentSession: AttachmentSession = { attachments: [] };
+attachmentSessions.set(props.conversationId ?? null, activeAttachmentSession);
+const attachments = ref<Attachment[]>(activeAttachmentSession.attachments);
+const uploadsInProgress = computed(
+  () => attachments.value.filter((a) => a.status === "uploading").length,
+);
+const readyAttachments = computed(() =>
+  attachments.value.filter((a) => a.status === "ready" && a.path),
+);
+const dragCounter = ref(0);
+const isSmallScreen = ref(typeof window !== "undefined" ? window.innerWidth < 480 : false);
+const mobileSkillPicker = ref(window.innerWidth <= 767);
+const skillViewport = ref({
+  top: window.visualViewport?.offsetTop ?? 0,
+  height: window.visualViewport?.height ?? window.innerHeight,
+});
+const showQueueMenu = ref(false);
+const slashMenuSelectedIndex = ref(0);
+const slashMenuDismissed = ref(false);
+// Set once the user has moved the highlight in the /model argument menu (via
+// Arrow keys). When they then press Enter we complete the highlighted option
+// rather than sending the (possibly bare) command — mirroring a mouse click.
+const modelArgMenuNavigated = ref(false);
+
+const queueMenuRef = ref<HTMLDivElement | null>(null);
+const slashMenuRef = ref<HTMLDivElement | null>(null);
+const textareaRef = ref<HTMLTextAreaElement | null>(null);
+const fileInputRef = ref<HTMLInputElement | null>(null);
+const screenRecordingAvailable =
+  typeof navigator !== "undefined" && typeof navigator.mediaDevices?.getDisplayMedia === "function";
+const mediaRecordingAvailable =
+  typeof window !== "undefined" &&
+  typeof window.MediaRecorder === "function" &&
+  typeof navigator.mediaDevices?.getUserMedia === "function";
+
+// Pick a placeholder hint per mount; re-pick when the platform flips.
+const hint = ref(pickPlaceholderHint(isSmallScreen.value));
+let initialPlatform = isSmallScreen.value;
+watch(isSmallScreen, (small) => {
+  if (small === initialPlatform) return;
+  initialPlatform = small;
+  hint.value = pickPlaceholderHint(small);
+});
+
+const placeholderText = computed(() => {
+  if (hint.value.id !== "default" && hint.value.text) return hint.value.text;
+  return t("messagePlaceholder");
+});
+
+function handleResize() {
+  isSmallScreen.value = window.innerWidth < 480;
+  mobileSkillPicker.value = window.innerWidth <= 767;
+  handleViewportResize();
+}
+
+const canRecordAudio = computed(
+  () => mediaRecordingAvailable && props.recordingInlineAvailable && !isDisabled.value &&
+    !submitting.value && uploadsInProgress.value === 0 && !recordingSubmission.value,
+);
+const canRecordScreen = computed(() => canRecordAudio.value && screenRecordingAvailable);
+
+defineExpose({ canRecordAudio, canRecordScreen, beginRecording });
+
+function beginRecording(mode: RecordingMode) {
+  if (!(mode === "screen" ? canRecordScreen.value : canRecordAudio.value)) return;
+  // Explain the missing transcription route instead of recording something
+  // the server cannot transcribe.
+  if (!window.__SHELLEY_INIT__?.transcription_available) {
+    emit("recording-unavailable");
+    return;
+  }
+  // Acquire media in the initiating key/click handler, before draft I/O.
+  // The panel owns the stream and presents acquisition failures.
+  const microphone =
+    mode === "microphone"
+      ? navigator.mediaDevices.getUserMedia({ audio: true })
+      : undefined;
+  const screen =
+    mode === "screen"
+      ? navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
+      : undefined;
+  void microphone?.catch(() => {});
+  void screen?.catch(() => {});
+  // The recorder starts while the destination is still being created.
+  const preparation = props.onStartRecording(message.value);
+  const submission = shallowReactive<RecordingSubmission>({
+    mode,
+    microphone,
+    screen,
+    preparation,
+    destination: preparation.resolve(),
+    origin: props.conversationId ?? null,
+    message: message.value,
+    context: composeMessageWithAttachments(message.value),
+    attachmentIDs: readyAttachments.value.map(({ id }) => id),
+    attachmentSession: activeAttachmentSession,
+  });
+  recordingSubmission.value = submission;
+  watchRecordingDestination(submission);
+}
+
+function watchRecordingDestination(submission: RecordingSubmission) {
+  const destination = submission.destination;
+  destination.then(
+    (resolved) => {
+      if (recordingSubmission.value !== submission) return;
+      adoptAttachmentSession(submission, resolved.conversationId);
+      submission.conversationId = resolved.conversationId;
+    },
+    (error) => {
+      if (recordingSubmission.value !== submission) return;
+      submission.destinationError = error instanceof Error ? error.message : String(error);
+    },
+  );
+}
+
+// A new draft may have finished creating after navigation away from /new.
+function adoptAttachmentSession(submission: RecordingSubmission, conversationId: string) {
+  if (attachmentSessions.get(null) === submission.attachmentSession) {
+    attachmentSessions.delete(null);
+  }
+  if (!attachmentSessions.has(conversationId)) {
+    attachmentSessions.set(conversationId, submission.attachmentSession);
+  }
+}
+
+function returnToRecording() {
+  const submission = recordingSubmission.value;
+  // A recorder cancelled while Return is in flight must not navigate later.
+  const stillWanted = () => recordingSubmission.value === submission;
+  void submission?.destination.then(
+    (resolved) => {
+      if (stillWanted()) return resolved.returnTo(stillWanted);
+    },
+    () => {},
+  );
+}
+
+function completionFor(submission: RecordingSubmission) {
+  return (path: string, retry: boolean) => handleRecordingComplete(submission, path, retry);
+}
+
+async function handleRecordingComplete(submission: RecordingSubmission, path: string, retry: boolean) {
+  if (retry && submission.destinationError) {
+    submission.destinationError = undefined;
+    submission.destination = submission.preparation.resolve();
+    watchRecordingDestination(submission);
+  }
+  let destination: RecordingDestination;
+  try {
+    destination = await submission.destination;
+  } catch (error) {
+    if (recordingSubmission.value === submission) reportUnsentRecording(path, error);
+    throw error;
+  }
+  if (recordingSubmission.value !== submission) {
+    throw new DOMException("Recording cancelled", "AbortError");
+  }
+  submission.submitting = true;
+  try {
+    await destination.complete(path, submission.context);
+  } finally {
+    submission.submitting = false;
+  }
+  if (disposed) return;
+  if (props.conversationId === destination.conversationId && message.value === submission.message) {
+    setMessage("");
+  }
+  for (const id of submission.attachmentIDs) {
+    removeAttachment(id, submission.attachmentSession);
+  }
+}
+
+function reportUnsentRecording(path: string, error: unknown) {
+  emit("recording-unsent", path, error);
+}
+
+async function closeRecording() {
+  const wasInline = !recordingFloating.value;
+  const submission = recordingSubmission.value;
+  submission?.preparation.release();
+  if (submission && ![...attachmentSessions.values()].includes(submission.attachmentSession)) {
+    clearAttachments(submission.attachmentSession);
+  }
+  recordingSubmission.value = null;
+  await nextTick();
+  if (wasInline) textareaRef.value?.focus();
+}
+
+// Close queue menu on click outside
+function onQueueMenuOutside(e: MouseEvent) {
+  if (queueMenuRef.value && !queueMenuRef.value.contains(e.target as Node)) {
+    showQueueMenu.value = false;
+  }
+}
+watch(showQueueMenu, (open) => {
+  if (open) document.addEventListener("mousedown", onQueueMenuOutside);
+  else document.removeEventListener("mousedown", onQueueMenuOutside);
+});
+
+// Close queue menu when queueing becomes unavailable
+watch(
+  () => props.canQueue,
+  (cq) => {
+    if (!cq) showQueueMenu.value = false;
+  },
+);
+
+async function uploadFile(file: File) {
+  const session = activeAttachmentSession;
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const isImage = file.type.startsWith("image/");
+  const previewUrl = isImage ? URL.createObjectURL(file) : undefined;
+  updateAttachments(session, (current) => [
+    ...current,
+    { id, name: file.name, isImage, previewUrl, status: "uploading" },
+  ]);
+
+  try {
+    const formData = new FormData();
+    formData.append("file", file);
+    const response = await fetch("/api/upload", { method: "POST", body: formData });
+    if (!response.ok) {
+      const errorText = await response.text();
+      let msg = response.statusText;
+      if (errorText.trim()) {
+        try {
+          const payload = JSON.parse(errorText) as { message?: unknown };
+          if (typeof payload.message === "string" && payload.message.trim()) {
+            msg = payload.message.trim();
+          }
+        } catch {
+          msg = errorText.trim();
+        }
+      }
+      throw new Error(`Upload failed: ${msg}`);
+    }
+    const data = await response.json();
+    updateAttachments(session, (current) =>
+      current.map((a) => (a.id === id ? { ...a, status: "ready", path: data.path } : a)),
+    );
+  } catch (error) {
+    console.error("Failed to upload file:", error);
+    const msg = error instanceof Error ? error.message : "unknown error";
+    updateAttachments(session, (current) =>
+      current.map((a) => (a.id === id ? { ...a, status: "error", error: msg } : a)),
+    );
+  }
+}
+
+function updateAttachments(
+  session: AttachmentSession,
+  update: (current: Attachment[]) => Attachment[],
+) {
+  session.attachments = update(session.attachments);
+  if (session === activeAttachmentSession) attachments.value = session.attachments;
+}
+
+function removeAttachment(id: string, session = activeAttachmentSession) {
+  const found = session.attachments.find((a) => a.id === id);
+  if (found?.previewUrl) URL.revokeObjectURL(found.previewUrl);
+  updateAttachments(session, (current) => current.filter((a) => a.id !== id));
+}
+
+/** Compose final message text by appending `[path]` tokens for ready attachments. */
+function composeMessageWithAttachments(text: string): string {
+  if (readyAttachments.value.length === 0) return text;
+  const tokens = readyAttachments.value.map((a) => `[${a.path}]`).join(" ");
+  const trimmed = text.trimEnd();
+  return trimmed.length > 0 ? `${trimmed} ${tokens}` : tokens;
+}
+
+function clearAttachments(session = activeAttachmentSession) {
+  session.attachments.forEach((a) => {
+    if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+  });
+  updateAttachments(session, () => []);
+}
+
+watch(
+  () => props.conversationId,
+  (newId, oldId) => {
+    const key = newId ?? null;
+    if (newId != null && newId === props.lazyDraftId) {
+      attachmentSessions.delete(oldId ?? null);
+      attachmentSessions.set(key, activeAttachmentSession);
+      return;
+    }
+
+    const recording = recordingSubmission.value;
+    if (recording && !recording.conversationId && !recording.detached) {
+      recording.detached = true;
+    }
+
+    if (oldId == null && newId != null) {
+      const abandoned = attachmentSessions.get(null);
+      if (abandoned && abandoned !== recordingSubmission.value?.attachmentSession) {
+        clearAttachments(abandoned);
+      }
+      attachmentSessions.delete(null);
+    }
+    activeAttachmentSession = attachmentSessions.get(key) ?? { attachments: [] };
+    attachmentSessions.set(key, activeAttachmentSession);
+    attachments.value = activeAttachmentSession.attachments;
+  },
+);
+
+function handlePaste(event: ClipboardEvent) {
+  const items = event.clipboardData?.items;
+  if (items) {
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.kind === "file") {
+        const file = item.getAsFile();
+        if (file) {
+          event.preventDefault();
+          void uploadFile(file);
+          return;
+        }
+      }
+    }
+  }
+}
+
+function handleDragOver(event: DragEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+}
+function handleDragEnter(event: DragEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+  dragCounter.value += 1;
+}
+function handleDragLeave(event: DragEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+  dragCounter.value -= 1;
+}
+async function handleDrop(event: DragEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+  dragCounter.value = 0;
+  // Snapshot the file list synchronously (DataTransfer enters protected mode
+  // after the first await).
+  if (event.dataTransfer && event.dataTransfer.files.length > 0) {
+    const files = Array.from(event.dataTransfer.files);
+    for (const file of files) {
+      await uploadFile(file);
+    }
+  }
+}
+
+function handleAttachClick() {
+  fileInputRef.value?.click();
+}
+
+async function handleFileSelect(event: Event) {
+  const target = event.target as HTMLInputElement;
+  const files = target.files;
+  if (!files || files.length === 0) return;
+  for (let i = 0; i < files.length; i++) {
+    await uploadFile(files[i]);
+  }
+  // Reset input so same file can be selected again
+  target.value = "";
+}
+
+// Auto-insert injected text (diff comments, image comments) into the textarea.
+watch(
+  () => props.injectedText,
+  (injected) => {
+    if (injected) {
+      setMessage((prev) => {
+        const needsNewline = prev.length > 0 && !prev.endsWith("\n");
+        return prev + (needsNewline ? "\n\n" : "") + injected;
+      });
+      emit("clear-injected-text");
+      // Focusing shows the user where the text landed, but not at the cost of
+      // yanking focus out of a modal that is still open: the image comment view
+      // stays up across submissions so several regions can be commented on.
+      setTimeout(() => {
+        if (document.activeElement?.closest('[aria-modal="true"]')) return;
+        textareaRef.value?.focus();
+      }, 0);
+    }
+  },
+);
+
+const hasContent = computed(
+  () => message.value.trim().length > 0 || readyAttachments.value.length > 0,
+);
+
+const isDisabled = computed(() => props.disabled);
+const canSubmit = computed(
+  () => hasContent.value && !isDisabled.value && !submitting.value && uploadsInProgress.value === 0,
+);
+const isDraggingOver = computed(() => dragCounter.value > 0);
+const isShellMode = computed(() => message.value.trimStart().startsWith("!"));
+function isModEvent(e: KeyboardEvent) {
+  return e.metaKey || e.ctrlKey;
+}
+
+// --- @ filename autocomplete --------------------------------------------
+const fileMenuId = useId();
+const fileMenuRef = ref<HTMLDivElement | null>(null);
+// useFileCompletion keys its results on the session and reacts synchronously,
+// so it must not observe the session mid-update. conversationId and
+// lazyDraftId are separate props that Vue patches one at a time: promoting a
+// new conversation to a draft goes (null, null) -> (id, null) -> (id, id), and
+// the middle state's session is the id. Fed composerSession() directly, the
+// completion would reset its highlight and re-fetch on every draft creation —
+// i.e. under the user's arrow keys, ~600ms after typing pauses. A batched watcher only
+// sees the settled value, which is unchanged (null) for that transition.
+const completionSession = ref(composerSession());
+watch(composerSession, (session) => {
+  completionSession.value = session;
+});
+const skillMenuId = useId();
+
+const skillMenuRef = ref<HTMLDivElement | null>(null);
+
+const {
+  active: activeSkillCommand,
+  visible: showSkillMenu,
+  matches: skillMatches,
+  selected: skillSelected,
+  loading: skillLoading,
+  error: skillError,
+  focused: skillFocused,
+  updateSelection: updateSkillSelection,
+  dismiss: dismissSkills,
+  reopen: reopenSkills,
+  choose: completeSkill,
+  invalidate: invalidateSkills,
+} = useSkillCompletion({
+  message,
+  cwd: () => props.cwd ?? "",
+  session: () => completionSession.value,
+  conversationId: () => props.conversationId ?? null,
+  enabled: () => !isDisabled.value && !isShellMode.value,
+});
+
+// Chosen skills are chips, not draft text. They live in memory for the
+// current composer session; on send the server prefixes skill mentions.
+const selectedSkills = ref<SkillDescriptor[]>([]);
+const selectedSkillNames = () => selectedSkills.value.map((s) => s.name);
+watch([completionSession, () => props.cwd], () => {
+  selectedSkills.value = [];
+});
+function removeSelectedSkill(name: string) {
+  selectedSkills.value = selectedSkills.value.filter((s) => s.name !== name);
+  textareaRef.value?.focus();
+}
+
+async function chooseSkill(index: number) {
+  const replacement = completeSkill(index);
+  if (!replacement) return;
+  if (!selectedSkills.value.some((s) => s.name === replacement.skill.name)) {
+    selectedSkills.value = [...selectedSkills.value, replacement.skill];
+  }
+  setMessage(replacement.text);
+  await nextTick();
+  textareaRef.value?.focus();
+  textareaRef.value?.setSelectionRange(replacement.cursor, replacement.cursor);
+  syncFileSelection();
+}
+
+// All send paths (buttons, Enter, queue, send-now) consume the picker
+// instead of dispatching /skills as a command.
+function interceptSkillSubmission() {
+  if (!activeSkillCommand.value) {
+    // A restored draft or selected text may put the caret outside the token.
+    // A standalone /skills command still opens the picker, never dispatches.
+    if (isDisabled.value || !/^\/skills(?:[ \t]+[^\r\n]*)?$/.test(message.value.trim())) return false;
+    const cursor = message.value.trimEnd().length;
+    textareaRef.value?.setSelectionRange(cursor, cursor);
+    updateSkillSelection(cursor, cursor);
+    reopenSkills();
+    textareaRef.value?.focus();
+    return true;
+  }
+  if (showSkillMenu.value) void chooseSkill(skillSelected.value);
+  else {
+    reopenSkills();
+    textareaRef.value?.focus();
+  }
+  return true;
+}
+
+function onSkillMenuOutside(e: MouseEvent) {
+  if (skillMenuRef.value?.contains(e.target as Node) || e.target === textareaRef.value) return;
+  dismissSkills();
+}
+const skillSearchQuery = computed(() =>
+  message.value.split("\n", 1)[0].replace(/^\/skills[ \t]*/, ""),
+);
+function setSkillSearch(e: Event) {
+  const query = (e.target as HTMLInputElement).value;
+  const newline = message.value.indexOf("\n");
+  const rest = newline < 0 ? "" : message.value.slice(newline);
+  const command = `/skills ${query}`;
+  setMessage(command + rest);
+  updateSkillSelection(command.length, command.length);
+}
+function closeSkillPicker() {
+  dismissSkills();
+  textareaRef.value?.focus({ preventScroll: true });
+}
+function onTextareaBlur(e: FocusEvent) {
+  fileFocused.value = false;
+  if (mobileSkillPicker.value && showSkillMenu.value) return;
+  if (!skillMenuRef.value?.contains(e.relatedTarget as Node)) skillFocused.value = false;
+}
+watch(showSkillMenu, async (open) => {
+  if (open) document.addEventListener("mousedown", onSkillMenuOutside);
+  else document.removeEventListener("mousedown", onSkillMenuOutside);
+  if (open && mobileSkillPicker.value) {
+    await nextTick();
+    if (showSkillMenu.value && mobileSkillPicker.value) textareaRef.value?.blur();
+  }
+});
+watch(skillSelected, async () => {
+  await nextTick();
+  skillMenuRef.value?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
+});
+
+const {
+  visible: showFileMenu,
+  matches: fileMatches,
+  selected: fileSelected,
+  loading: fileLoading,
+  grepPending: fileGrepPending,
+  error: fileError,
+  focused: fileFocused,
+  updateSelection: updateFileSelection,
+  dismiss: dismissFiles,
+  choose: completeFile,
+} = useFileCompletion({
+  message,
+  cwd: () => props.cwd ?? "",
+  session: () => completionSession.value,
+  enabled: () => !isDisabled.value && !isShellMode.value && !showSkillMenu.value,
+});
+
+function syncFileSelection() {
+  const textarea = textareaRef.value;
+  if (textarea) {
+    updateFileSelection(textarea.selectionStart, textarea.selectionEnd);
+    updateSkillSelection(textarea.selectionStart, textarea.selectionEnd);
+  }
+}
+
+async function chooseFile(index: number) {
+  const replacement = completeFile(index);
+  if (!replacement) return;
+  setMessage(replacement.text);
+  await nextTick();
+  textareaRef.value?.focus();
+  textareaRef.value?.setSelectionRange(replacement.cursor, replacement.cursor);
+  syncFileSelection();
+}
+
+function onFileMenuOutside(e: MouseEvent) {
+  if (fileMenuRef.value?.contains(e.target as Node) || e.target === textareaRef.value) return;
+  dismissFiles();
+}
+
+watch(showFileMenu, (open) => {
+  if (open) document.addEventListener("mousedown", onFileMenuOutside);
+  else document.removeEventListener("mousedown", onFileMenuOutside);
+});
+watch(fileSelected, async () => {
+  await nextTick();
+  fileMenuRef.value?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
+});
+
+const slashQuery = computed(() => {
+  const match = message.value.match(/^\/[a-zA-Z0-9_-]*$/);
+  return match ? match[0].slice(1).toLowerCase() : null;
+});
+const slashSuggestions = computed(() => {
+  if (slashQuery.value === null) return [];
+  return slashCommandsForConversation(props.isChildConversation).filter((item) =>
+    item.command.slice(1).startsWith(slashQuery.value!),
+  );
+});
+const exactSlashCommand = computed(() =>
+  slashSuggestions.value.some((item) => item.command.slice(1) === slashQuery.value),
+);
+const showSlashMenu = computed(
+  () =>
+    slashQuery.value !== null &&
+    !slashMenuDismissed.value &&
+    !exactSlashCommand.value &&
+    slashSuggestions.value.length > 0 &&
+    !isDisabled.value &&
+    !isShellMode.value,
+);
+
+// --- /model argument autocomplete ---------------------------------------
+// As soon as "/model" has been typed (with or without a trailing space), offer
+// the ready model ids plus the reasoning levels as completions for the token
+// currently under the cursor. This mirrors the command grammar: /model <id>
+// and/or <level>, order independent. Levels are limited to what the target
+// model accepts: the model already typed as a prior token, else the current
+// one. "default" is deliberately absent — to /model it means the default MODEL.
+interface ModelArgOption {
+  value: string;
+  kind: "model" | "level";
+}
+// The model a level argument would apply to: a model id among the prior
+// tokens wins, otherwise the conversation's current model.
+const modelArgTarget = computed(() => {
+  const prior = modelArgContext.value?.prior ?? [];
+  const models = props.modelOptions ?? [];
+  const typed = prior.map((t) => models.find((m) => m.id === t)).find((m) => m !== undefined);
+  return typed ?? models.find((m) => m.id === props.currentModelId);
+});
+const modelArgOptions = computed<ModelArgOption[]>(() => [
+  ...(props.modelOptions ?? []).map((m) => ({ value: m.id, kind: "model" as const })),
+  ...supportedThinkingLevels(modelArgTarget.value).map((level) => ({
+    value: level,
+    kind: "level" as const,
+  })),
+]);
+// Matches "/model" and everything after it. The trailing arguments are
+// optional, so a bare "/model" (no space yet) also opens the menu — arrowing
+// then Enter, or just Enter, picks the top model. Captures the argument tail.
+const modelArgContext = computed(() => {
+  const m = message.value.match(/^\/model(?:\s+(.*))?$/s);
+  if (m === null) return null;
+  const rest = m[1] ?? "";
+  // The token under the cursor is the final whitespace-delimited chunk; the
+  // preceding tokens are already-entered arguments we must not re-suggest.
+  const priorEnd = rest.replace(/\S*$/, "");
+  const partial = rest.slice(priorEnd.length);
+  const prior = priorEnd.trim().split(/\s+/).filter(Boolean);
+  return { partial, prior };
+});
+const modelArgSuggestions = computed<ModelArgOption[]>(() => {
+  const ctx = modelArgContext.value;
+  if (ctx === null) return [];
+  // Normalize dots to dashes so "opus-4.8" and "opus-4-8" both match, mirroring
+  // the server's lenient resolver.
+  const norm = (s: string) => s.toLowerCase().replace(/\./g, "-");
+  const q = norm(ctx.partial);
+  const priorLower = new Set(ctx.prior.map((t) => t.toLowerCase()));
+  const usedModel = ctx.prior.some((t) => (props.modelOptions ?? []).some((m) => m.id === t));
+  const usedLevel = ctx.prior.some((t) => (CONCRETE_THINKING_LEVELS as string[]).includes(t));
+  const matched = modelArgOptions.value.filter((o) => {
+    if (priorLower.has(o.value.toLowerCase())) return false;
+    // Only one model and one level may be chosen.
+    if (o.kind === "model" && usedModel) return false;
+    if (o.kind === "level" && usedLevel) return false;
+    // Models match on any substring (so "opus" surfaces "claude-opus-4.8");
+    // levels match on prefix (they're short and prefix is unambiguous enough).
+    return o.kind === "model" ? norm(o.value).includes(q) : o.value.toLowerCase().startsWith(q);
+  });
+  // Rank prefix matches ahead of mid-string substring matches so the closest
+  // completions come first.
+  return matched.sort((a, b) => {
+    const ap = norm(a.value).startsWith(q) ? 0 : 1;
+    const bp = norm(b.value).startsWith(q) ? 0 : 1;
+    return ap - bp;
+  });
+});
+const showModelArgMenu = computed(
+  () =>
+    modelArgContext.value !== null &&
+    !showSkillMenu.value &&
+    !slashMenuDismissed.value &&
+    modelArgSuggestions.value.length > 0 &&
+    !isDisabled.value,
+);
+// Whether the token under the cursor is already a complete, valid argument
+// (an exact model id or reasoning level, dot/dash- and case-insensitive). When
+// it is, Enter should send the command rather than "completing" the token (which
+// would only append a space and force a second Enter).
+const partialIsCompleteOption = computed(() => {
+  const ctx = modelArgContext.value;
+  if (ctx === null || ctx.partial === "") return false;
+  const norm = (s: string) => s.toLowerCase().replace(/\./g, "-");
+  const p = norm(ctx.partial);
+  return modelArgOptions.value.some((o) => norm(o.value) === p);
+});
+function chooseModelArg(index: number) {
+  const opt = modelArgSuggestions.value[index];
+  const ctx = modelArgContext.value;
+  if (!opt || ctx === null) return;
+  // Replace the partial token under the cursor with the full option + a space,
+  // so the next argument can be typed/autocompleted immediately. When the
+  // message has no partial yet (e.g. bare "/model" with no trailing space),
+  // ensure a separating space so we don't produce "/modelclaude-...".
+  const withoutPartial =
+    ctx.partial === "" ? message.value : message.value.slice(0, -ctx.partial.length);
+  const sep = /\s$/.test(withoutPartial) ? "" : " ";
+  setMessage(`${withoutPartial}${sep}${opt.value} `);
+  requestAnimationFrame(() => textareaRef.value?.focus());
+}
+
+watch(modelArgContext, () => {
+  slashMenuSelectedIndex.value = 0;
+  modelArgMenuNavigated.value = false;
+});
+
+watch(slashQuery, () => {
+  slashMenuSelectedIndex.value = 0;
+});
+
+watch(message, (value) => {
+  if (value.length === 0) slashMenuDismissed.value = false;
+  if (value === SLASH_COMMANDS.SHELL.command) {
+    setMessage("!");
+    requestAnimationFrame(() => textareaRef.value?.focus());
+  }
+});
+
+async function chooseSlashCommand(index: number) {
+  const item = slashSuggestions.value[index];
+  if (!item) return;
+  if (item.command === SLASH_COMMANDS.SKILLS.command) {
+    setMessage(`${item.command} `);
+    await nextTick();
+    textareaRef.value?.focus();
+    textareaRef.value?.setSelectionRange(message.value.length, message.value.length);
+    syncFileSelection();
+    reopenSkills();
+    return;
+  }
+  if (!item.takesArgs) {
+    const origin = composerOrigin();
+    setMessage("");
+    slashMenuDismissed.value = true;
+    emit("draft-send-started");
+    try {
+      await props.onSend(item.command);
+      guardComposerClear(origin, composerOrigin, () => emit("draft-cleared"));
+    } catch {
+      guardComposerClear(origin, composerOrigin, () => setMessage(item.command));
+    }
+    return;
+  }
+  if (item.command === SLASH_COMMANDS.SHELL.command) {
+    setMessage("!");
+    requestAnimationFrame(() => textareaRef.value?.focus());
+    return;
+  }
+  setMessage(`${item.command} `);
+  requestAnimationFrame(() => textareaRef.value?.focus());
+}
+
+function onSlashMenuOutside(e: MouseEvent) {
+  if (slashMenuRef.value?.contains(e.target as Node)) return;
+  slashMenuDismissed.value = true;
+}
+
+watch([showSlashMenu, showModelArgMenu], ([a, b]) => {
+  if (a || b) document.addEventListener("mousedown", onSlashMenuOutside);
+  else document.removeEventListener("mousedown", onSlashMenuOutside);
+});
+
+function composerSession(): string | null {
+  return composerSessionID(props.conversationId, props.lazyDraftId);
+}
+
+let submissionGeneration = 0;
+function composerOrigin() {
+  return { session: composerSession(), generation: submissionGeneration };
+}
+watch(composerSession, () => {
+  submissionGeneration++;
+  submitting.value = false;
+});
+
+async function handleSubmit(e: Event) {
+  e.preventDefault();
+  if (interceptSkillSubmission()) return;
+  if (hasContent.value && !props.disabled && !submitting.value && uploadsInProgress.value === 0) {
+    if (openTerminalIfRequested(composerDispatch(message.value))) return;
+
+    const messageToSend = composeMessageWithAttachments(message.value);
+    const attachmentSession = activeAttachmentSession;
+    // Pause autosave before awaiting onSend so a trailing PUT can't race the
+    // chat POST. Don't clear the draft yet — if send fails the textarea stays.
+    emit("draft-send-started");
+    const submission = ++submissionGeneration;
+    const origin = composerOrigin();
+    submitting.value = true;
+    try {
+      await props.onSend(messageToSend, selectedSkillNames());
+      clearAttachments(attachmentSession);
+      guardComposerClear(origin, composerOrigin, () => {
+        selectedSkills.value = [];
+        invalidateSkills();
+        setMessage("");
+        emit("draft-cleared");
+      });
+    } catch {
+      // Keep the message on error so user can retry.
+    } finally {
+      if (submission === submissionGeneration) submitting.value = false;
+    }
+  }
+}
+
+async function handleQueueMessage() {
+  if (interceptSkillSubmission()) return;
+  const dispatch = composerDispatch(message.value, { intent: "queue" });
+  if (openTerminalIfRequested(dispatch)) return;
+  if (dispatch.route === "btw") {
+    await handleSendNow();
+    return;
+  }
+  if (hasContent.value && props.onQueue) {
+    const messageToQueue = composeMessageWithAttachments(message.value).trim();
+    const skillsToQueue = selectedSkills.value;
+    const origin = composerOrigin();
+    setMessage("");
+    clearAttachments();
+    selectedSkills.value = [];
+    invalidateSkills();
+    emit("draft-cleared");
+    showQueueMenu.value = false;
+    try {
+      await props.onQueue(
+        messageToQueue,
+        skillsToQueue.map((s) => s.name),
+      );
+    } catch {
+      guardComposerClear(origin, composerOrigin, () => {
+        selectedSkills.value = skillsToQueue;
+        setMessage(messageToQueue);
+      });
+    }
+  }
+}
+
+/** Send immediately — used when a /btw is picked from the queue option. */
+async function handleSendNow() {
+  if (interceptSkillSubmission()) return;
+  if (hasContent.value && !props.disabled && !submitting.value && uploadsInProgress.value === 0) {
+    const dispatch = composerDispatch(message.value, { intent: "send-now" });
+    if (openTerminalIfRequested(dispatch)) return;
+    const composed = composeMessageWithAttachments(message.value);
+    const messageToSend = dispatch.route === "btw" ? composed : composed.trim();
+    const skillsToSend = selectedSkills.value;
+    setMessage("");
+    clearAttachments();
+    selectedSkills.value = [];
+    invalidateSkills();
+    emit("draft-cleared");
+    showQueueMenu.value = false;
+    const submission = ++submissionGeneration;
+    const origin = composerOrigin();
+    submitting.value = true;
+    try {
+      await props.onSend(
+        messageToSend,
+        skillsToSend.map((s) => s.name),
+      );
+    } catch {
+      guardComposerClear(origin, composerOrigin, () => {
+        selectedSkills.value = skillsToSend;
+        setMessage(messageToSend);
+      });
+    } finally {
+      if (submission === submissionGeneration) submitting.value = false;
+    }
+  }
+}
+
+function openTerminalIfRequested(dispatch: ReturnType<typeof composerDispatch>): boolean {
+  if (dispatch.route !== "terminal") return false;
+  setMessage("");
+  emit("draft-cleared");
+  showQueueMenu.value = false;
+  emit("open-terminal");
+  return true;
+}
+
+function onTextareaInput(e: Event) {
+  setMessage((e.target as HTMLTextAreaElement).value);
+  syncFileSelection();
+}
+
+function onTextareaFocus() {
+  fileFocused.value = true;
+  skillFocused.value = true;
+  syncFileSelection();
+  // Scroll to bottom after keyboard animation settles
+  requestAnimationFrame(() => requestAnimationFrame(() => emit("focus")));
+}
+
+function handleKeyDown(e: KeyboardEvent) {
+  // Don't submit while IME is composing.
+  if (isImeComposing(e)) return;
+  syncFileSelection();
+  if (showSkillMenu.value) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      dismissSkills();
+      return;
+    }
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (skillMatches.value.length) {
+        skillSelected.value =
+          (skillSelected.value + (e.key === "ArrowDown" ? 1 : -1) + skillMatches.value.length) %
+          skillMatches.value.length;
+      }
+      return;
+    }
+    if ((e.key === "Enter" && !e.shiftKey) || (e.key === "Tab" && !e.shiftKey)) {
+      // Loading, empty, and error states must never fall through to sending.
+      e.preventDefault();
+      void chooseSkill(skillSelected.value);
+      return;
+    }
+  }
+  if (showFileMenu.value) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      dismissFiles();
+      return;
+    }
+    if (fileMatches.value.length && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      e.preventDefault();
+      fileSelected.value =
+        (fileSelected.value + (e.key === "ArrowDown" ? 1 : -1) + fileMatches.value.length) %
+        fileMatches.value.length;
+      return;
+    }
+    if (
+      (fileLoading.value || fileGrepPending.value || fileMatches.value.length > 0) &&
+      !e.shiftKey &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      (e.key === "Enter" || e.key === "Tab")
+    ) {
+      // Don't accidentally send while either search phase is loading; settled
+      // empty/error searches leave normal typing, submission and focus navigation alone.
+      e.preventDefault();
+      void chooseFile(fileSelected.value);
+      return;
+    }
+  }
+  if (showSlashMenu.value) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      slashMenuSelectedIndex.value =
+        (slashMenuSelectedIndex.value + 1) % slashSuggestions.value.length;
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      slashMenuSelectedIndex.value =
+        (slashMenuSelectedIndex.value - 1 + slashSuggestions.value.length) %
+        slashSuggestions.value.length;
+      return;
+    }
+    if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault();
+      void chooseSlashCommand(slashMenuSelectedIndex.value);
+      return;
+    }
+  }
+  if (showModelArgMenu.value) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      modelArgMenuNavigated.value = true;
+      slashMenuSelectedIndex.value =
+        (slashMenuSelectedIndex.value + 1) % modelArgSuggestions.value.length;
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      modelArgMenuNavigated.value = true;
+      slashMenuSelectedIndex.value =
+        (slashMenuSelectedIndex.value - 1 + modelArgSuggestions.value.length) %
+        modelArgSuggestions.value.length;
+      return;
+    }
+    // Tab always completes the highlighted option. Enter completes the
+    // highlighted option when:
+    //   - the user moved the highlight with the arrow keys (Enter == click), or
+    //   - the token under the cursor is a genuine partial (not yet a full
+    //     option), so users can chain arguments, or
+    //   - nothing has been chosen yet (bare "/model" with no argument): Enter
+    //     picks the top suggestion instead of sending a useless bare command.
+    // Once an argument is present and the token is complete (e.g. "/model low"
+    // or "/model <id> "), Enter falls through and sends the command.
+    if (e.key === "Tab") {
+      e.preventDefault();
+      chooseModelArg(slashMenuSelectedIndex.value);
+      return;
+    }
+    const ctx = modelArgContext.value;
+    const nothingChosenYet = ctx !== null && ctx.partial === "" && ctx.prior.length === 0;
+    if (
+      e.key === "Enter" &&
+      (modelArgMenuNavigated.value ||
+        nothingChosenYet ||
+        (ctx?.partial !== "" && !partialIsCompleteOption.value))
+    ) {
+      e.preventDefault();
+      chooseModelArg(slashMenuSelectedIndex.value);
+      return;
+    }
+  }
+  // Escape blurs the textarea so follow-up shortcuts work.
+  if (e.key === "Escape") {
+    textareaRef.value?.blur();
+    return;
+  }
+  if (e.key === "Enter" && !e.shiftKey) {
+    // On mobile, let Enter create newlines since there's a send button.
+    const isMobile = "ontouchstart" in window;
+    if (isMobile && !isModEvent(e)) return;
+    e.preventDefault();
+    void handleSubmit(e);
+  }
+}
+
+// autoFocus — re-attempt focus when the textarea becomes enabled. Skips when
+// focus is inside an open modal (e.g. the file finder opened right after page
+// load): stealing focus there sends the user's typing to the composer instead.
+watch(
+  () => [props.autoFocus, props.disabled] as const,
+  ([af, dis]) => {
+    if (af && !dis && textareaRef.value) {
+      focusMessageInputIfUnfocused();
+    }
+  },
+  { immediate: true },
+);
+
+// Handle virtual keyboard appearance on mobile via visualViewport.
+function handleViewportResize() {
+  skillViewport.value = {
+    top: window.visualViewport?.offsetTop ?? 0,
+    height: window.visualViewport?.height ?? window.innerHeight,
+  };
+  if (document.activeElement === textareaRef.value) {
+    requestAnimationFrame(() => {
+      textareaRef.value?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  }
+}
+
+onMounted(() => {
+  window.addEventListener("resize", handleResize);
+  if (typeof window !== "undefined" && window.visualViewport) {
+    window.visualViewport.addEventListener("resize", handleViewportResize);
+  }
+});
+
+onUnmounted(() => {
+  disposed = true;
+  const sessions = new Set(attachmentSessions.values());
+  if (recordingSubmission.value) sessions.add(recordingSubmission.value.attachmentSession);
+  recordingSubmission.value?.preparation.release();
+  recordingSubmission.value = null;
+  window.removeEventListener("resize", handleResize);
+  if (typeof window !== "undefined" && window.visualViewport) {
+    window.visualViewport.removeEventListener("resize", handleViewportResize);
+  }
+  document.removeEventListener("mousedown", onQueueMenuOutside);
+  document.removeEventListener("mousedown", onSlashMenuOutside);
+  document.removeEventListener("mousedown", onFileMenuOutside);
+  document.removeEventListener("mousedown", onSkillMenuOutside);
+  for (const session of sessions) clearAttachments(session);
+});
+</script>

@@ -1,0 +1,92 @@
+{
+  "_README": "This file is managed by LazyCue (see shelley/lazycue). Do NOT edit by hand — it is the cached, machine-generated DSL for a self-healing browser test. To change behavior, edit the test description and re-run LazyCue.",
+  "description": "Checks that composer text whose send never completed survives a reload and a later server echo. Perform these steps in order, exactly as described; do not add extra steps.\n1. Navigate to /new.\n2. Wait for the message input (data-testid \"message-input\") to be visible.\n3. Fill the message input with the value \"echo: reload seed\" and click the send button (data-testid \"send-button\").\n4. Wait for the URL to contain \"/c/\".\n5. Eval, polling until it matches: the agent's reply has rendered. Expression: \"(function(){var ms=document.querySelectorAll('.message-agent');for(var i=0;i\u003cms.length;i++){if(ms[i].innerText.indexOf('reload seed')\u003e=0)return 'replied';}return 'waiting';})()\". Expect \"replied\".\n6. Eval: install a fetch shim so the chat POST never reaches the server and never settles (a dead connection), remembering the conversation id it targeted. Expression: \"(function(){var o=window.fetch;window.fetch=function(u,opt){var s=(typeof u==='string')?u:u.url;var m=s.match(/\\/api\\/conversation\\/([^\\/]+)\\/chat$/);if(m\u0026\u0026opt\u0026\u0026opt.method==='POST'){sessionStorage.setItem('reloadMidSendId',m[1]);return new Promise(function(){});}return o(u,opt);};return 'hung';})()\". Expect \"hung\".\n7. Fill the message input with the value \"echo: never accepted\" and click the send button (data-testid \"send-button\").\n8. Eval, polling until it matches: the send was attempted. Expression: \"sessionStorage.getItem('reloadMidSendId')?'attempted':'waiting'\". Expect \"attempted\".\n9. Eval: mark this page as the old one and reload it. Expression: \"(function(){window.__preReload=1;location.reload();return 'reloading';})()\". Expect \"reloading\".\n10. Eval, polling until it matches: the NEW page (which has no such mark) has restored the composer with the unsent text. Expression: \"(function(){if(window.__preReload)return 'old page';var el=document.querySelector('[data-testid=message-input]');return el?'['+el.value+']':'loading';})()\". Expect \"[echo: never accepted]\".\n11. Sleep about 1.5 seconds, so the turn posted next lands in a later second than the conversation's last update (its timestamp has one-second resolution, and the page only reconciles its composer when that timestamp changes).\n12. Eval: post a turn to this conversation from outside the page, as another tab would. Expression: \"(function(){var id=sessionStorage.getItem('reloadMidSendId');fetch('/api/conversation/'+id+'/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:'echo: nudge'})});return 'posted';})()\". Expect \"posted\".\n13. Eval, polling until it matches: the agent's reply to that turn has rendered. Expression: \"(function(){var ms=document.querySelectorAll('.message-agent');for(var i=0;i\u003cms.length;i++){if(ms[i].innerText.indexOf('nudge')\u003e=0)return 'replied';}return 'waiting';})()\". Expect \"replied\".\n14. Eval: the restored text is still in the composer; the echo must not have cleared it. Expression: \"(function(){return '['+document.querySelector('[data-testid=message-input]').value+']';})()\". Expect \"[echo: never accepted]\".",
+  "version": 1,
+  "steps": [
+    {
+      "action": "navigate",
+      "url": "/new"
+    },
+    {
+      "action": "wait_visible",
+      "selector": "[data-testid='message-input']",
+      "timeout": "10s"
+    },
+    {
+      "action": "fill",
+      "selector": "[data-testid='message-input']",
+      "value": "echo: reload seed"
+    },
+    {
+      "action": "click",
+      "selector": "[data-testid='send-button']"
+    },
+    {
+      "action": "wait_url",
+      "text": "/c/",
+      "timeout": "15s"
+    },
+    {
+      "action": "eval",
+      "expression": "(function(){var ms=document.querySelectorAll('.message-agent');for(var i=0;i\u003cms.length;i++){if(ms[i].innerText.indexOf('reload seed')\u003e=0)return 'replied';}return 'waiting';})()",
+      "expect": "replied"
+    },
+    {
+      "action": "eval",
+      "expression": "(function(){var o=window.fetch;window.fetch=function(u,opt){var s=(typeof u==='string')?u:u.url;var m=s.match(/\\/api\\/conversation\\/([^\\/]+)\\/chat$/);if(m\u0026\u0026opt\u0026\u0026opt.method==='POST'){sessionStorage.setItem('reloadMidSendId',m[1]);return new Promise(function(){});}return o(u,opt);};return 'hung';})()",
+      "expect": "hung"
+    },
+    {
+      "action": "fill",
+      "selector": "[data-testid='message-input']",
+      "value": "echo: never accepted"
+    },
+    {
+      "action": "click",
+      "selector": "[data-testid='send-button']"
+    },
+    {
+      "action": "eval",
+      "expression": "sessionStorage.getItem('reloadMidSendId')?'attempted':'waiting'",
+      "expect": "attempted"
+    },
+    {
+      "action": "eval",
+      "expression": "(function(){window.__preReload=1;location.reload();return 'reloading';})()",
+      "expect": "reloading"
+    },
+    {
+      "action": "eval",
+      "expression": "(function(){if(window.__preReload)return 'old page';var el=document.querySelector('[data-testid=message-input]');return el?'['+el.value+']':'loading';})()",
+      "expect": "[echo: never accepted]"
+    },
+    {
+      "action": "sleep",
+      "timeout": "1.5s"
+    },
+    {
+      "action": "eval",
+      "expression": "(function(){var id=sessionStorage.getItem('reloadMidSendId');fetch('/api/conversation/'+id+'/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:'echo: nudge'})});return 'posted';})()",
+      "expect": "posted"
+    },
+    {
+      "action": "eval",
+      "expression": "(function(){var ms=document.querySelectorAll('.message-agent');for(var i=0;i\u003cms.length;i++){if(ms[i].innerText.indexOf('nudge')\u003e=0)return 'replied';}return 'waiting';})()",
+      "expect": "replied"
+    },
+    {
+      "action": "eval",
+      "expression": "(function(){return '['+document.querySelector('[data-testid=message-input]').value+']';})()",
+      "expect": "[echo: never accepted]"
+    }
+  ],
+  "metadata": {
+    "created_at": "2026-10-03T16:28:57.175484265Z",
+    "hostname": "phil-dev",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 13049,
+    "output_tokens": 1910,
+    "estimated_cost_usd": 0.067797,
+    "mode": "generated"
+  }
+}

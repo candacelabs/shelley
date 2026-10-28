@@ -1,0 +1,102 @@
+{
+  "_README": "This file is managed by LazyCue (see shelley/lazycue). Do NOT edit by hand — it is the cached, machine-generated DSL for a self-healing browser test. To change behavior, edit the test description and re-run LazyCue.",
+  "description": "Reproduces the \"text sent from another tab lingers in this tab's composer\" bug. Perform these steps in order, exactly as described; do not add extra steps.\n1. Navigate to /new.\n2. Wait for the message input (data-testid \"message-input\") to be visible.\n3. Fill the message input with the value \"echo: cross-tab seed\" and click the send button (data-testid \"send-button\").\n4. Wait for the URL to contain \"/c/\".\n5. Eval, polling until it matches: the agent's reply has rendered. Expression: \"(function(){var ms=document.querySelectorAll('.message-agent');for(var i=0;i\u003cms.length;i++){if(ms[i].innerText.indexOf('cross-tab seed')\u003e=0)return 'replied';}return 'waiting';})()\". Expect \"replied\".\n6. Open a second tab, \"B\", on the same page this tab is on (navigate in tab B with no URL).\n7. In tab B, wait for the message input (data-testid \"message-input\") to be visible.\n8. In tab B, eval: install a fetch shim that lets the chat POST reach the server but holds its response until released. Expression: \"(function(){var o=window.fetch;window.fetch=function(u,opt){var s=(typeof u==='string')?u:u.url;if(/\\/api\\/conversation\\/[^\\/]+\\/chat$/.test(s)\u0026\u0026opt\u0026\u0026opt.method==='POST'){return o(u,opt).then(function(r){return new Promise(function(res){window.__release=function(){res(r);};});});}return o(u,opt);};return 'held';})()\". Expect \"held\".\n9. Sleep about 1.5 seconds, so the message sent next lands in a later second than the conversation's last update (its timestamp has one-second resolution, and the first tab only reconciles its composer when that timestamp changes).\n10. In tab B, fill the message input with the value \"echo: cross-tab-sent\" and click the send button (data-testid \"send-button\").\n11. In the first tab, eval, polling until it matches: the agent's reply to the message sent from tab B has rendered. Expression: \"(function(){var ms=document.querySelectorAll('.message-agent');for(var i=0;i\u003cms.length;i++){if(ms[i].innerText.indexOf('cross-tab-sent')\u003e=0)return 'replied';}return 'waiting';})()\". Expect \"replied\".\n12. In the first tab, eval: its composer must still be empty; the text sent from tab B must not have appeared in it. Expression: \"(function(){return '['+document.querySelector('[data-testid=message-input]').value+']';})()\". Expect \"[]\".\n13. In tab B, eval: release the held response. Expression: \"(function(){window.__release();return 'released';})()\". Expect \"released\".\n14. In tab B, eval, polling until it matches: its composer cleared once its send completed. Expression: \"(function(){return '['+document.querySelector('[data-testid=message-input]').value+']';})()\". Expect \"[]\".\n15. In the first tab, eval: its composer is still empty. Expression: \"(function(){return '['+document.querySelector('[data-testid=message-input]').value+']';})()\". Expect \"[]\".",
+  "version": 1,
+  "steps": [
+    {
+      "action": "navigate",
+      "url": "/new"
+    },
+    {
+      "action": "wait_visible",
+      "selector": "[data-testid='message-input']",
+      "timeout": "10s"
+    },
+    {
+      "action": "fill",
+      "selector": "[data-testid='message-input']",
+      "value": "echo: cross-tab seed"
+    },
+    {
+      "action": "click",
+      "selector": "[data-testid='send-button']"
+    },
+    {
+      "action": "wait_url",
+      "text": "/c/",
+      "timeout": "15s"
+    },
+    {
+      "action": "eval",
+      "expression": "(function(){var ms=document.querySelectorAll('.message-agent');for(var i=0;i\u003cms.length;i++){if(ms[i].innerText.indexOf('cross-tab seed')\u003e=0)return 'replied';}return 'waiting';})()",
+      "expect": "replied"
+    },
+    {
+      "action": "navigate",
+      "tab": "B"
+    },
+    {
+      "action": "wait_visible",
+      "tab": "B",
+      "selector": "[data-testid='message-input']",
+      "timeout": "10s"
+    },
+    {
+      "action": "eval",
+      "tab": "B",
+      "expression": "(function(){var o=window.fetch;window.fetch=function(u,opt){var s=(typeof u==='string')?u:u.url;if(/\\/api\\/conversation\\/[^\\/]+\\/chat$/.test(s)\u0026\u0026opt\u0026\u0026opt.method==='POST'){return o(u,opt).then(function(r){return new Promise(function(res){window.__release=function(){res(r);};});});}return o(u,opt);};return 'held';})()",
+      "expect": "held"
+    },
+    {
+      "action": "sleep",
+      "timeout": "1.5s"
+    },
+    {
+      "action": "fill",
+      "tab": "B",
+      "selector": "[data-testid='message-input']",
+      "value": "echo: cross-tab-sent"
+    },
+    {
+      "action": "click",
+      "tab": "B",
+      "selector": "[data-testid='send-button']"
+    },
+    {
+      "action": "eval",
+      "expression": "(function(){var ms=document.querySelectorAll('.message-agent');for(var i=0;i\u003cms.length;i++){if(ms[i].innerText.indexOf('cross-tab-sent')\u003e=0)return 'replied';}return 'waiting';})()",
+      "expect": "replied"
+    },
+    {
+      "action": "eval",
+      "expression": "(function(){return '['+document.querySelector('[data-testid=message-input]').value+']';})()",
+      "expect": "[]"
+    },
+    {
+      "action": "eval",
+      "tab": "B",
+      "expression": "(function(){window.__release();return 'released';})()",
+      "expect": "released"
+    },
+    {
+      "action": "eval",
+      "tab": "B",
+      "expression": "(function(){return '['+document.querySelector('[data-testid=message-input]').value+']';})()",
+      "expect": "[]"
+    },
+    {
+      "action": "eval",
+      "expression": "(function(){return '['+document.querySelector('[data-testid=message-input]').value+']';})()",
+      "expect": "[]"
+    }
+  ],
+  "metadata": {
+    "created_at": "2026-10-03T16:28:53.369064327Z",
+    "hostname": "phil-dev",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 12760,
+    "output_tokens": 1819,
+    "estimated_cost_usd": 0.065565,
+    "mode": "generated"
+  }
+}

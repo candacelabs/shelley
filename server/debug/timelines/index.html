@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Timelines · Shelley Debug</title><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/debug/debug.css"><link rel="stylesheet" href="/debug/timelines/timelines.css"><script src="/debug/theme.js"></script><script src="/debug-timelines.js" defer></script><script src="/debug/timelines/timeline.js" defer></script><script src="/debug/timelines/page.js" defer></script></head>
+<body><main>
+  <header><h1>Conversation timelines</h1><a href="/debug/">← Debug</a></header>
+  <div class="dashboard">
+    <button id="sidebar-backdrop" class="sidebar-backdrop" aria-label="Close chat sidebar" tabindex="-1"></button>
+    <aside id="chat-sidebar" class="chat-sidebar" aria-label="Chat selection">
+      <div class="sidebar-heading"><strong>Chats</strong><button id="sidebar-close" class="btn btn-secondary btn-sm" aria-label="Close chat sidebar">✕</button></div>
+      <input id="filter" type="search" placeholder="Find a chat…" aria-label="Filter chats">
+      <p id="chat-count" class="muted"></p>
+      <nav id="conversations" aria-label="Conversations"></nav>
+    </aside>
+    <section class="timeline-panel" aria-label="Selected conversation">
+      <div class="mobile-nav"><button id="sidebar-open" class="btn btn-secondary btn-sm" aria-controls="chat-sidebar" aria-expanded="false">☰ Chats</button></div>
+      <div class="conversation-heading"><h2 id="chat-title">Select a chat</h2><button id="refresh" class="btn btn-secondary btn-sm">Refresh</button></div>
+      <p id="status" class="status" role="status">Loading conversations…</p>
+      <div id="view"></div>
+    </section>
+  </div>
+</main></body></html>

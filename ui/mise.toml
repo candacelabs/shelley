@@ -1,0 +1,14 @@
+# Node.js and pnpm for Shelley's UI build, tests and CI. scripts/with-node
+# installs exactly these with its own pinned mise and checks the result;
+# mise.lock pins per-platform checksums (after a change, with-node prints the
+# command that regenerates it). The Makefile and CI run Node through it.
+#
+# pnpm is its native (Rust) release binary, checksummed in mise.lock; it embeds
+# no Node, and the scripts it runs use the node above. package.json's
+# packageManager names the same pnpm.
+[tools]
+node = "26.12.1"
+"aqua:pnpm/pnpm" = "12.14.0"
+
+[settings]
+lockfile = true

@@ -1,0 +1,53 @@
+{
+  "_README": "This file is managed by LazyCue (see shelley/lazycue). Do NOT edit by hand — it is the cached, machine-generated DSL for a self-healing browser test. To change behavior, edit the test description and re-run LazyCue.",
+  "description": "Navigate to /new. Use an eval step to call window.__recordingMock.reset() and return \"ready\". Click the voice recording button (data-testid \"voice-button\"). Wait for eval \"String(window.__recordingMock.recorderStarts)\" to equal \"1\". Without asserting on the transient pre-roll state, click the recording cancel button (data-testid \"recording-cancel-button\"). The recording panel (data-testid \"recording-panel\") must close. Assert the durable result with eval \"(function(){var m=window.__recordingMock;return m.uploadCount===0\u0026\u0026m.recorderStops===1\u0026\u0026m.stoppedTracks\u003e0?'pass':'uploads='+m.uploadCount+' stops='+m.recorderStops+' tracks='+m.stoppedTracks;})()\" expecting \"pass\".",
+  "version": 1,
+  "steps": [
+    {
+      "action": "navigate",
+      "url": "/new"
+    },
+    {
+      "action": "wait_text",
+      "text": "Send a message",
+      "timeout": "10s"
+    },
+    {
+      "action": "eval",
+      "expression": "window.__recordingMock.reset(); 'ready'",
+      "expect": "ready"
+    },
+    {
+      "action": "click",
+      "selector": "[data-testid=\"voice-button\"]"
+    },
+    {
+      "action": "eval",
+      "expression": "String(window.__recordingMock.recorderStarts)",
+      "expect": "1"
+    },
+    {
+      "action": "click",
+      "selector": "[data-testid=\"recording-cancel-button\"]"
+    },
+    {
+      "action": "wait_hidden",
+      "selector": "[data-testid=\"recording-panel\"]",
+      "timeout": "10s"
+    },
+    {
+      "action": "eval",
+      "expression": "(function(){var m=window.__recordingMock;return m.uploadCount===0\u0026\u0026m.recorderStops===1\u0026\u0026m.stoppedTracks\u003e0?'pass':'uploads='+m.uploadCount+' stops='+m.recorderStops+' tracks='+m.stoppedTracks;})()",
+      "expect": "pass"
+    }
+  ],
+  "metadata": {
+    "created_at": "2026-09-29T22:36:31.482696676Z",
+    "hostname": "phil-dev",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 124573,
+    "output_tokens": 3790,
+    "estimated_cost_usd": 0.43056900000000004,
+    "mode": "generated"
+  }
+}

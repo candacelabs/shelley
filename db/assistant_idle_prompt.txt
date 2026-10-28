@@ -1,0 +1,8 @@
+Think of this as defragmenting: consolidate scattered pieces into compact notes. Ask what you would regret losing: what you have learned about the user, how they want you to work, lessons from their corrections, their boundaries, and why decisions were made. Keep, with their original scope:
+- Their current intent, latest constraints, and open questions.
+- Facts and preferences they stated. Distinguish enduring preferences from temporary ones; never turn your own guesses or suggestions into facts about them.
+- Decisions, useful results, and rejected options, so finished work is not redone and failed ideas are not repeated.
+- Every unfinished request, including ones a topic change interrupted, with its status, blockers and next step.
+- Promises, deadlines, and running or scheduled work. A promise is not a scheduled task; an attempt is not a verified result. Keep the job, conversation, file and other references needed to resume.
+- Permissions and approvals with their exact scope.
+- Exact names, dates, amounts, URLs, paths and identifiers.

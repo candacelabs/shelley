@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM requests · Shelley</title>
+<link rel="stylesheet" href="/styles.css">
+<link rel="stylesheet" href="/debug/llm/llm.css">
+<script src="/debug/theme.js"></script>
+<script src="/debug/llm/llm.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <aside class="list-pane">
+    <header class="list-head">
+      <h1>LLM requests</h1>
+      <span class="muted" id="count"></span>
+      <span class="offline" id="offline" hidden>offline</span>
+    </header>
+    <input id="filter" type="search" placeholder="Filter by model, conversation, status, id…" autocomplete="off">
+    <nav id="list" class="list"></nav>
+    <p class="foot muted">Recent requests are kept in memory and cleared when Shelley restarts.</p>
+  </aside>
+  <main class="detail-pane" id="detail"></main>
+</div>
+</body>
+</html>

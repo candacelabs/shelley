@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Debug · Shelley</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/debug/debug.css" />
+    <script src="/debug/theme.js"></script>
+  </head>
+  <body>
+    <main class="index">
+      <h1>Debug</h1>
+
+      <h2>Conversations</h2>
+      <dl>
+        <dt><a href="/debug/conversations/">conversations</a></dt>
+        <dd>Unarchived top-level conversations, with each one's token usage as CSV.</dd>
+        <dt><a href="/debug/conversation-stream">conversation-stream</a></dt>
+        <dd>The conversation list's live patch stream.</dd>
+        <dt><a href="/debug/histograms">histograms</a></dt>
+        <dd>Size distributions of this database's conversations.</dd>
+        <dt><a href="/debug/loremipsum">loremipsum</a></dt>
+        <dd>Generate a synthetic conversation for performance testing.</dd>
+        <dt><a href="/debug/timelines/">timelines</a></dt>
+        <dd>Agent activity, compaction, context, and cost on a shared clock.</dd>
+      </dl>
+
+      <h2>Integrations</h2>
+      <dl>
+        <dt><a href="/debug/llm/">llm</a></dt>
+        <dd>Recent LLM requests and responses, kept in memory.</dd>
+        <dt><a href="/debug/mcp">mcp</a></dt>
+        <dd>MCP servers, sessions, and recent events.</dd>
+        <dt><a href="/debug/channels/">channels</a></dt>
+        <dd>A stand-in for the exe.dev messages service, for trying channels.</dd>
+      </dl>
+
+      <h2>UI and runtime</h2>
+      <dl>
+        <dt><a href="/debug/stylebook">stylebook</a></dt>
+        <dd>The UI's type, color, and spacing reference.</dd>
+        <dt><a href="/debug/pprof/">pprof</a></dt>
+        <dd>Go runtime profiles.</dd>
+
+      </dl>
+    </main>
+  </body>
+</html>
