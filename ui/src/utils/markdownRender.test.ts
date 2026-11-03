@@ -294,10 +294,10 @@ assert(!withoutId.includes("<img"), "local image dropped with no messageId to au
   );
   const hrefs = [...root.querySelectorAll("a")].map((a) => a.getAttribute("href"));
   const want = [
-    "/api/message/msg-1/file?path=%2Ftmp%2Fsbx%2Fa.png",
-    "/api/message/msg-1/download?path=out%2Fb.csv",
-    "/api/message/msg-1/download?path=report.md",
-    "/api/message/msg-1/download?path=%2Ftmp%2Fd.png",
+    "api/message/msg-1/file?path=%2Ftmp%2Fsbx%2Fa.png",
+    "api/message/msg-1/download?path=out%2Fb.csv",
+    "api/message/msg-1/download?path=report.md",
+    "api/message/msg-1/download?path=%2Ftmp%2Fd.png",
     "https://x.test/e.png",
     "/c/abc?message_id=1",
     "#top",
@@ -322,6 +322,19 @@ assert(!withoutId.includes("<img"), "local image dropped with no messageId to au
     root.querySelector("a")?.hasAttribute("download") === false,
     "raw HTML cannot mark arbitrary links as downloads",
   );
+  // Under a mount, links to Shelley's own pages resolve under it; file links
+  // are already relative to the page's <base>.
+  (dom.window as unknown as { __SHELLEY_INIT__?: { base_path: string } }).__SHELLEY_INIT__ = {
+    base_path: "/shelley/",
+  };
+  root.innerHTML = renderMarkdownToSafeHTML("[f](/c/abc?message_id=1) [a](/api/x) [b](out/b.csv)", "msg-1");
+  const mounted = [...root.querySelectorAll("a")].map((a) => a.getAttribute("href"));
+  assert(
+    JSON.stringify(mounted) ===
+      JSON.stringify(["/shelley/c/abc?message_id=1", "/shelley/api/x", "api/message/msg-1/download?path=out%2Fb.csv"]),
+    `mounted links: ${JSON.stringify(mounted)}`,
+  );
+  delete (dom.window as unknown as { __SHELLEY_INIT__?: unknown }).__SHELLEY_INIT__;
 }
 
 const exeDevLinks = { isExeDev: true, hostname: "demo.exe.xyz" };

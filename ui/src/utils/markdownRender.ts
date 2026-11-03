@@ -5,6 +5,7 @@
 // existing test (components/MarkdownContent.test.ts) keeps passing.
 import { Marked } from "marked";
 import DOMPurify from "dompurify";
+import { basePath } from "./basePath";
 import { rewriteLocalhostLink, type LocalhostLinkOptions } from "./linkify";
 import * as markdownMath from "./markdownMath";
 
@@ -117,6 +118,19 @@ function buildMarked(messageId?: string, localhostLinks?: LocalhostLinkOptions):
   return instance;
 }
 
+// Shelley's own pages and API, which the server and models link root-relative
+// ("/c/<slug>?message_id=…", "/api/…"). Under a mount (csf serves Shelley at
+// /shelley/) the root is not Shelley's, so these resolve under basePath().
+const SHELLEY_ROOT_PREFIXES = ["/c/", "/api/"] as const;
+
+// mountedHref is href resolved under the mount when it names one of Shelley's
+// own pages or API routes, and href unchanged otherwise (and when Shelley is
+// served at "/").
+export function mountedHref(href: string): string {
+  if (!SHELLEY_ROOT_PREFIXES.some((prefix) => href.startsWith(prefix))) return href;
+  return basePath() + href.slice(1);
+}
+
 function setLinkTarget(node: Element): void {
   if (node.getAttribute("href")?.includes("message_id=") && node.textContent?.trim() === "↗") {
     node.classList.add("message-source-link");
@@ -125,6 +139,7 @@ function setLinkTarget(node: Element): void {
   }
 
   const href = node.getAttribute("href");
+  if (href !== null && mountedHref(href) !== href) node.setAttribute("href", mountedHref(href));
   if (href?.startsWith("c/") || href?.startsWith("/c/")) node.removeAttribute("target");
   else node.setAttribute("target", "_blank");
   node.setAttribute("rel", "noopener noreferrer");
