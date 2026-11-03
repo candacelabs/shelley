@@ -57,7 +57,7 @@ test("skills discovers actual tools with namespaced identities, display names, s
     requests.push({ url: input, signal: init?.signal });
     if (input.startsWith("api/skills?")) return Response.json({ skills: [] });
     if (input === "api/mcp/servers") return Response.json([{ name: "web tools" }]);
-    assert.equal(input, "/api/mcp/servers/web%20tools/tools");
+    assert.equal(input, "api/mcp/servers/web%20tools/tools");
     return Response.json({ tools: [search] });
   });
   const result = await api.getSkills("/work", null, controller.signal);
