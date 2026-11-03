@@ -30,7 +30,10 @@
   <WarningMessage v-else-if="message.type === 'warning'" :message="message" />
 
   <!-- modelchange -->
-  <ModelChangeMessage v-else-if="message.type === 'modelchange'" :message="message" />
+  <ModelChangeMessage
+    v-else-if="message.type === 'modelchange' || message.type === 'profileturn'"
+    :message="message"
+  />
 
   <!-- inplacecompaction -->
   <InPlaceCompactionMessage v-else-if="message.type === 'inplacecompaction'" :message="message" />
@@ -40,7 +43,6 @@
     v-else-if="message.type === 'gitinfo'"
     :message="message"
     :on-open-diff-viewer="onOpenDiffViewer"
-    :can-request-tour="canRequestTour"
   />
 
   <!-- error message -->
@@ -144,6 +146,14 @@
         >
           {{ authorEmail }}
         </div>
+        <div
+          v-if="textedFromPhone"
+          class="message-via-text"
+          data-testid="message-via-text"
+          title="Texted from your phone (iMessage, RCS, or SMS)"
+        >
+          <i class="pi pi-mobile" aria-hidden="true" /> via text
+        </div>
         <!-- One action region per content entity (thinking blocks stand alone,
              adjacent answer content stays grouped; see splitContentEntities).
              Copy is scoped to the entity; info/fork stay message-level. -->
@@ -165,7 +175,16 @@
             :on-fork="hasForkAction ? handleFork : undefined"
           />
 
-          <template v-if="jobNotice">
+          <template v-if="actionReport">
+            <ActionRunCard
+              v-if="entityIndex === 0"
+              :run-id="actionReport.runId"
+              :report="actionReport"
+              :text="messageText"
+            />
+          </template>
+
+          <template v-else-if="jobNotice">
             <BackgroundJobNoticeCard
               v-if="entityIndex === 0"
               :source="jobNotice"
@@ -276,10 +295,11 @@ import MessageContentBlock from "./MessageContentBlock.vue";
 import CitedText from "./CitedText.vue";
 import { coalesceContent, splitContentEntities } from "../../utils/coalesceContent";
 import { perfCount } from "../../utils/perf";
-import { messageSource, mcpNoticeSource } from "../../utils/messageSource";
+import { messageSource, mcpNoticeSource, actionReportSource } from "../../utils/messageSource";
 import ConversationMessageCard from "./ConversationMessageCard.vue";
 import BackgroundJobNoticeCard from "./BackgroundJobNoticeCard.vue";
 import McpServerNoticeCard from "./McpServerNoticeCard.vue";
+import ActionRunCard from "./ActionRunCard.vue";
 import MessageDisplayData from "./MessageDisplayData.vue";
 
 interface ToolDisplay {
@@ -290,8 +310,7 @@ interface ToolDisplay {
 
 const props = defineProps<{
   message: MessageType;
-  onOpenDiffViewer?: (commit: string, cwd?: string, openOnFiles?: boolean) => void;
-  canRequestTour?: boolean;
+  onOpenDiffViewer?: (commit: string, cwd?: string) => void;
   onCommentTextChange?: (text: string) => void;
   // onFork forks the conversation, copying messages up to and including this
   // one into a new conversation and navigating to it.
@@ -414,6 +433,10 @@ const jobNotice = computed(() =>
 const conversationSender = computed(() =>
   sender.value && "conversationId" in sender.value ? sender.value : null,
 );
+// Project action reports render as the run's card.
+const actionReport = computed(() =>
+  isUser.value && !isDistilledUser.value ? actionReportSource(props.message.user_data) : null,
+);
 // Notices that the registered MCP servers changed render as a system card.
 const mcpNotice = computed(() =>
   isUser.value && !isDistilledUser.value ? mcpNoticeSource(props.message.user_data) : null,
@@ -422,6 +445,19 @@ const authorEmail = computed(() =>
   isUser.value && !isDistilledUser.value && showUserEmails?.value
     ? props.message.user_email || null
     : null,
+);
+
+// A user message texted to the workspace Assistant from the user's phone.
+const isAssistantConversation = inject<ComputedRef<boolean> | null>(
+  "isAssistantConversation",
+  null,
+);
+const textedFromPhone = computed(
+  () =>
+    !!isAssistantConversation?.value &&
+    isUser.value &&
+    !isDistilledUser.value &&
+    !!props.message.external_message_id,
 );
 
 // ---- Legacy compaction summary ----
@@ -617,7 +653,7 @@ const hasRenderableContent = computed(() => {
 
 // ---- Message container classes ----
 const messageClasses = computed(() => {
-  if (jobNotice.value || conversationSender.value) {
+  if (jobNotice.value || conversationSender.value || actionReport.value) {
     return "message message-tool message-tool-card";
   }
   if (isUser.value && !isDistilledUser.value) {

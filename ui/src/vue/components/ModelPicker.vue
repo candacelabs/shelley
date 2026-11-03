@@ -22,13 +22,9 @@
      placement; styling uses size="small" + the shared statusPickerDt token
      map.
 
-     The overlay is appended to the trigger for the boxed variant and to <body>
-     for the inline one. append-to="self" positions with relativePosition(),
-     which aligns left edges and never clamps to the viewport — fine for the
-     composer's full-width trigger, but the inline trigger sits at the right edge
-     of the status bar, from where the panel hung off the left of the screen on a
-     narrow viewport. The body portal takes absolutePosition(), which does clamp
-     and flip. -->
+     The overlay is appended to <body>, where PrimeVue can clamp and flip it
+     against the viewport without a compact or scrollable trigger ancestor
+     clipping it. -->
 <template>
   <Select
     ref="selectRef"
@@ -46,7 +42,7 @@
     :scroll-height="scrollHeight"
     :class="['model-picker', { 'model-picker-inline': inline }]"
     :aria-label="ariaLabel"
-    :append-to="inline || appendToBody ? 'body' : 'self'"
+    append-to="body"
     :pt="{
       overlay: { class: ['model-picker-panel', panelClass] },
       label: disabledReason ? { 'aria-description': disabledReason } : {},
@@ -65,11 +61,17 @@
     @hide="onHide"
   >
     <template #value>
-      <slot name="value" :label="selectedLabel">
+      <slot name="value" :label="selectedLabel" :badge="selectedBadge">
         <span class="model-picker-value">
           <span :class="['model-picker-value-name', { 'status-readout-affordance': inline }]">{{
             triggerLabel || selectedLabel
           }}</span>
+          <span
+            v-if="selectedBadge"
+            class="model-picker-custom-badge"
+            :title="inline ? undefined : selectedBadge.title"
+            >{{ selectedBadge.label }}</span
+          >
           <span v-if="effortText && !inline && !triggerLabel" class="model-picker-value-effort"
             >· {{ effortText }}</span
           >
@@ -139,8 +141,12 @@
         <div class="model-picker-option-content">
           <span class="model-picker-option-name">{{ option.label }}</span>
           <span
-            v-if="option.source && (option.source_id || option.source !== dominantSource)"
+            v-if="
+              option.source &&
+              (option.source_id || option.source !== dominantSource || isCustom(option))
+            "
             class="model-picker-option-source"
+            :title="isCustom(option) ? endpointHost(option.base_url) : undefined"
             >{{ option.source }}</span
           >
         </div>
@@ -355,6 +361,7 @@
                   {{ t("profileUpdate").replace("{name}", knob.profile) }}
                 </button>
                 <button
+                  v-if="!knob.inProject"
                   ref="saveAsNewButton"
                   class="model-picker-link"
                   type="button"
@@ -387,6 +394,7 @@ import { computed, inject, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import Select from "primevue/select";
 import { statusPickerDt } from "./statusPickerDt";
 import { prettyModelLabels } from "../../utils/modelNames";
+import { customModelBadge, endpointHost } from "../../utils/customModelBadge";
 import { accountSuffixes } from "../../utils/providerAccounts";
 import { THINKING_LEVELS, type ThinkingLevel } from "./thinkingLevel";
 import { useI18n } from "../composables/i18n";
@@ -423,9 +431,6 @@ const props = withDefaults(
     /** Show the "Manage models…" / refresh footer. Off where the picker
      *  configures a one-shot action rather than the catalog. */
     catalogActions?: boolean;
-    /** Portal the overlay to <body> so it isn't clipped by a scrollable
-     *  ancestor (e.g. the version modal). */
-    appendToBody?: boolean;
     /** Render as bare text (no box, no chevron) for the status-bar readout,
      *  where the picker sits among plain dot-separated segments. The overlay
      *  and behavior are unchanged; only the trigger's chrome differs. */
@@ -458,7 +463,6 @@ const props = withDefaults(
     refreshing: false,
     catalogActions: true,
     inline: false,
-    appendToBody: false,
     // On a short screen the list gives way further, to fit the sections
     // around it (see .model-picker-panel in styles.css).
     scrollHeight: "22rem",
@@ -625,6 +629,13 @@ const selectedLabel = computed(
 
 // ---- reasoning effort --------------------------------------------------
 
+// A hook-supplied trigger label replaces the model label, so the badge would
+// describe a model the trigger is not showing.
+const selectedBadge = computed(() =>
+  props.triggerLabel ? null : customModelBadge(selectedModelObj.value),
+);
+const isCustom = (m: Pick<Model, "source" | "source_id" | "base_url">) =>
+  customModelBadge(m) !== null;
 const reasoningSupported = computed(() => selectedModelObj.value?.supports_reasoning !== false);
 
 // The model's default as a real, selectable level (null when the provider's

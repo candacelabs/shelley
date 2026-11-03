@@ -31,7 +31,16 @@
         <Button label="Dismiss" text @click="error = null" />
       </div>
     </div>
+    <div v-if="workspace.error.value" class="error-banner" role="alert">
+      <span>{{ workspace.error.value }}</span>
+      <Button :label="t('retry')" text @click="retryWorkspace" />
+    </div>
+    <WorkspaceDialogs @created="selectConversation" />
     <div v-if="banner" class="top-banner" :title="banner">{{ banner }}</div>
+    <div v-if="uiUpdated" class="update-bar" role="status">
+      {{ t("shelleyUpdated") }}
+      <button type="button" class="text-button" @click="reloadPage">{{ t("reloadPage") }}</button>
+    </div>
     <div class="app-container">
       <ConversationDrawer
         :is-open="drawerOpen"
@@ -45,9 +54,9 @@
         @open="drawerOpen = true"
         @close="drawerOpen = false"
         @toggle-collapse="toggleDrawerCollapsed"
-        @select-conversation="selectConversation"
-        @new-conversation="startNewConversation"
-        @archived="handleConversationArchived"
+        @select-conversation="selectFromDrawer"
+        @new-conversation="newConversation"
+        @removed="handleConversationRemoved"
         @unarchived="handleConversationUnarchived"
         @renamed="handleConversationRenamed"
         @pointerenter="drawerHovered = true"
@@ -64,6 +73,12 @@
           :on-resource-status="applyResourceStatus"
           :on-open-drawer="() => (drawerOpen = true)"
           :on-new-conversation="startNewConversation"
+          :on-new-project-conversation="
+            workspaceMode
+              ? () => workspace.newProjectConversation(workspace.projectFor(currentConversationId)?.name)
+              : undefined
+          "
+          :is-assistant="workspace.isAssistant(currentConversationId)"
           :on-select-conversation="selectConversation"
           :on-archive-conversation="archiveFromChat"
           :current-conversation="currentConversation"
@@ -103,6 +118,7 @@
         :is-open="commandPaletteOpen"
         :conversations="topLevelConversations"
         :current-conversation="currentConversation || null"
+        :is-assistant="workspace.isAssistant(currentConversationId)"
         :has-cwd="commandPaletteHasCwd"
         :can-record-audio="chatInterfaceRef?.canRecordAudio ?? false"
         :can-record-screen="chatInterfaceRef?.canRecordScreen ?? false"
@@ -110,7 +126,7 @@
         @close="onCommandPaletteClose"
         @new-conversation="
           () => {
-            startNewConversation();
+            newConversation();
             commandPaletteOpen = false;
           }
         "
@@ -296,6 +312,7 @@ import { computed, onMounted, onUnmounted, provide, ref, watch, shallowRef } fro
 import ChatInterface from "./components/ChatInterface.vue";
 import type { RecordingMode } from "./components/recordingDestination";
 import { isImeComposing } from "../utils/imeComposing";
+import { conversationTitle } from "../utils/conversationTitle";
 import { comboMatches, hasOpenDialog, MENU_COMBOS, terminalOwnsKey } from "../utils/menuShortcuts";
 import ConversationDrawer from "./components/ConversationDrawer.vue";
 import CommandPalette from "./components/CommandPalette.vue";
@@ -321,6 +338,7 @@ import {
   type ChatRequest,
 } from "../types";
 import { api, ApiError } from "../services/api";
+import { startActivityHeartbeat } from "../services/activityHeartbeat";
 import { btwStore } from "../services/btwStore";
 import { messageStore } from "../services/messageStore";
 import {
@@ -328,8 +346,10 @@ import {
   type ConversationListState,
 } from "../services/conversationListStream";
 import { connectGlobalStream, type StreamStatus } from "../services/globalStream";
-import { handleNotificationEvent } from "../services/notifications";
 import { loadCachedDraft } from "../services/draftCache";
+import { workspaceMode } from "../utils/workspaceMode";
+import { errorMessage } from "../utils/errorMessage";
+import { handleNotificationEvent } from "../services/notifications";
 import { initialDrawerCollapsed, saveDrawerCollapsedPreference } from "../utils/drawerStartup";
 import { perfCount } from "../utils/perf";
 import { useI18n } from "./composables/i18n";
@@ -344,6 +364,9 @@ import {
 import { provideOpenFileEditor } from "./composables/fileEditor";
 import { useFeatureFlag } from "./composables/featureFlags";
 import { useMobileDrawerSwipe } from "./composables/mobileDrawerSwipe";
+import WorkspaceDialogs from "./components/WorkspaceDialogs.vue";
+import { createWorkspace } from "./composables/workspace";
+import type { ActionRunSummary } from "../services/workspace";
 import PerfHud from "./components/PerfHud.vue";
 import { routePath } from "../utils/basePath";
 
@@ -368,23 +391,27 @@ function isNewPath(): boolean {
   return routePath() === "/new";
 }
 
+// Captured BEFORE render so URL-updating effects don't clobber it.
+const initialSlugFromUrl = getSlugFromPath();
 // A brand-new-conversation draft composed offline never reaches the server
 // (createDraft fails), so it survives only in localStorage under the "new"
 // slot. On reopen we land on "/" and would otherwise auto-select the most
 // recent conversation, orphaning that text. Detect a pending non-empty cached
 // draft so startup can keep the user in the new-conversation view instead.
+// In workspace mode "/" is the Assistant's, not the most recent conversation.
 function hasPendingNewDraft(): boolean {
-  return !!loadCachedDraft(null)?.value.trim();
+  return !workspaceMode && !!loadCachedDraft(null)?.value.trim();
 }
-
-// Captured BEFORE render so URL-updating effects don't clobber it.
-const initialSlugFromUrl = getSlugFromPath();
 const initialIsNew = isNewPath() || (!getSlugFromPath() && hasPendingNewDraft());
 
 function updateUrlWithSlug(conversation: Conversation | undefined) {
   const currentSlug = getSlugFromPath();
+  // In workspace mode the Assistant lives at "/".
+  const assistant = !!conversation && workspace.isAssistant(conversation.conversation_id);
   let newSlug: string | null = null;
-  if (conversation?.slug && !isGeneratedId(conversation.slug)) {
+  if (assistant) {
+    newSlug = null;
+  } else if (conversation?.slug && !isGeneratedId(conversation.slug)) {
     newSlug = conversation.slug;
   } else if (conversation) {
     // Drafts, and new conversations until their slug arrives.
@@ -392,6 +419,9 @@ function updateUrlWithSlug(conversation: Conversation | undefined) {
   }
   if (currentSlug !== newSlug) {
     if (newSlug) window.history.replaceState({}, "", `c/${newSlug}`);
+    // A link to the Assistant keeps its ?message_id= and #fragment.
+    else if (assistant)
+      window.history.replaceState({}, "", "./" + window.location.search + window.location.hash);
     else window.history.replaceState({}, "", "./");
   }
 }
@@ -399,13 +429,17 @@ function updateUrlWithSlug(conversation: Conversation | undefined) {
 function updatePageTitle(conversation: Conversation | undefined) {
   const hostname = window.__SHELLEY_INIT__?.hostname;
   const parts: string[] = [];
-  if (conversation?.slug && !isGeneratedId(conversation.slug)) parts.push(conversation.slug);
+  if (conversation?.slug && !isGeneratedId(conversation.slug))
+    parts.push(conversationTitle(conversation.slug));
   if (hostname) parts.push(hostname);
   parts.push("Shelley Agent");
   document.title = parts.join(" - ");
 }
 
 const banner = window.__SHELLEY_INIT__?.banner;
+// The server runs a newer UI build; the page reloads once hidden.
+const uiUpdated = ref(false);
+const reloadPage = () => window.location.reload();
 
 // ---- state ----
 // Patches replace the list (and only the rows they touch), so deep reactivity is unnecessary.
@@ -416,6 +450,21 @@ const currentConversationId = ref<string | null>(null);
 provide(ConversationsListKey, conversations);
 provide(CurrentConversationIdKey, currentConversationId);
 const viewedConversation = ref<Conversation | null>(null);
+// Loaded alongside the conversation list, and again on workspace_changed;
+// a failure shows in workspace.error.
+const workspace = createWorkspace((run: ActionRunSummary) => {
+  if (run.status !== "succeeded" || run.conversation_id !== currentConversationId.value) return;
+  void api
+    .getConversationBySlug(run.conversation_id)
+    .then((conversation) => {
+      if (conversation && currentConversationId.value === run.conversation_id)
+        viewedConversation.value = conversation;
+    })
+    .catch((err: unknown) => {
+      workspace.error.value = errorMessage(err);
+    });
+});
+const refreshWorkspace = () => void workspace.refresh().catch(() => {});
 const drawerOpen = ref(false);
 useMobileDrawerSwipe(drawerOpen);
 watch(drawerOpen, (open) => {
@@ -541,16 +590,26 @@ function onDrawerPointerLeave() {
   drawerHovered = false;
   lingering.value = null;
 }
+// Ids listed when a request creating the composed conversation went out, while
+// any is pending (see withComposerRow).
+const creating = shallowRef<ReadonlySet<string> | null>(null);
+let pendingCreates = 0;
 provide(ComposerPreviewKey, {
   rowId: computed(() =>
     composer.value && composer.value.sent === null ? composerRowId(composer.value) : null,
   ),
   text: composerText,
+  leavable: computed(() => {
+    const row = composer.value;
+    return (
+      row?.id === null &&
+      row.sent === null &&
+      creating.value === null &&
+      !composerText.value.trim() &&
+      conversations.value.some((c) => !c.parent_conversation_id)
+    );
+  }),
 });
-// Ids listed when a request creating the composed conversation went out, while
-// any is pending (see withComposerRow).
-const creating = shallowRef<ReadonlySet<string> | null>(null);
-let pendingCreates = 0;
 const drawerConversations = computed(() => {
   const list = withComposerRow(conversations.value, composer.value, creating.value);
   return lingering.value ? withComposerRow(list, lingering.value, null) : list;
@@ -792,6 +851,8 @@ async function loadConversations() {
     if (slugConv) {
       currentConversationId.value = slugConv.conversation_id;
       viewedConversation.value = slugConv;
+    } else if (!initialIsNew && workspaceMode) {
+      await selectAssistant();
     } else if (!initialIsNew && topLevel.length > 0) {
       currentConversationId.value = topLevel[0].conversation_id;
       viewedConversation.value = topLevel[0];
@@ -805,7 +866,33 @@ async function loadConversations() {
   }
 }
 
+// Retry from the workspace banner: in workspace mode a page that couldn't
+// open the Assistant for want of the workspace loads again.
+function retryWorkspace() {
+  if (workspaceMode && !currentConversationId.value && !initialIsNew) void loadConversations();
+  else refreshWorkspace();
+}
+
+// The Assistant needs the workspace, which loads next to the conversation
+// list.
+async function selectAssistant() {
+  if (!workspace.data.value) await workspace.refresh();
+  const id = workspace.data.value?.assistant_id;
+  if (!id) throw new Error("The workspace did not provide an Assistant");
+  const assistant =
+    conversations.value.find((conversation) => conversation.conversation_id === id) ??
+    (await api.getConversationBySlug(id));
+  if (!assistant) throw new Error("Assistant could not be loaded");
+  selectConversation(assistant);
+}
+
 // ---- conversation actions ----
+// Workspace mode starts conversations in projects; otherwise, a new conversation.
+function newConversation() {
+  if (workspaceMode) workspace.newProjectConversation();
+  else void startNewConversation();
+}
+
 async function startNewConversation(): Promise<boolean> {
   error.value = null;
   const conversation = currentConversation.value;
@@ -882,6 +969,19 @@ function selectConversation(conversation: Conversation) {
   drawerOpen.value = false;
 }
 
+// Picking a conversation (or the Assistant) in the drawer focuses the composer. The
+// clicked row/link takes focus itself, which would make the composer's
+// autofocus defer to it; release it so focus falls back to <body>. If the
+// composer is still disabled while loading, its autoFocus watch retries.
+function selectFromDrawer(conversation: Conversation) {
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && active.closest(".conversation-item, .workspace-assistant-row")) {
+    active.blur();
+  }
+  selectConversation(conversation);
+  focusMessageInputIfUnfocused();
+}
+
 function toggleDrawerCollapsed() {
   drawerCollapsed.value = !drawerCollapsed.value;
   saveDrawerCollapsedPreference(drawerCollapsed.value, localStorage);
@@ -897,28 +997,32 @@ function handleMessageSent(conversationId: string) {
   if (conversationId === currentConversationId.value) messageSentTrigger.value++;
 }
 
-function handleConversationArchived(
-  conversationId: string,
-  nextConversation?: Conversation | null,
-) {
-  void messageStore.delete(conversationId);
-  btwStore.clear(conversationId);
-  if (currentConversationId.value === conversationId) {
-    if (nextConversation?.conversation_id === COMPOSER_ROW_ID) {
-      reopenLingering();
-      return;
-    }
-    if (nextConversation && nextConversation.conversation_id !== conversationId) {
-      currentConversationId.value = nextConversation.conversation_id;
-      viewedConversation.value = nextConversation;
-      return;
-    }
-    const remaining = conversations.value.filter(
-      (conv) => conv.conversation_id !== conversationId && !conv.parent_conversation_id,
-    );
-    currentConversationId.value = remaining.length > 0 ? remaining[0].conversation_id : null;
-    viewedConversation.value = remaining.length > 0 ? remaining[0] : null;
+// An archived or deleted row left the drawer; if it was open, open its neighbor.
+function handleConversationRemoved(conversationId: string, nextConversation?: Conversation | null) {
+  const wasOpen = drawerCurrentConversationId.value === conversationId;
+  if (conversationId !== COMPOSER_ROW_ID) {
+    void messageStore.delete(conversationId);
+    btwStore.clear(conversationId);
   }
+  if (!wasOpen) return;
+  if (nextConversation?.conversation_id === COMPOSER_ROW_ID) {
+    reopenLingering();
+    return;
+  }
+  const next =
+    nextConversation ??
+    conversations.value.find(
+      (conv) => conv.conversation_id !== conversationId && !conv.parent_conversation_id,
+    ) ??
+    null;
+  if (!next) {
+    startNewConversationWithCwd(null);
+    return;
+  }
+  // A deleted placeholder goes at once rather than lingering under the pointer.
+  if (conversationId === COMPOSER_ROW_ID) composer.value = null;
+  currentConversationId.value = next.conversation_id;
+  viewedConversation.value = next;
 }
 
 function handleConversationUnarchived(conversation: Conversation) {
@@ -935,14 +1039,20 @@ function handleConversationRenamed(conversation: Conversation) {
 }
 
 async function archiveFromChat(conversationId: string) {
-  await api.archiveConversation(conversationId);
-  handleConversationArchived(conversationId);
+  if (workspace.isAssistant(conversationId)) throw new Error("Assistant cannot be archived");
+  await workspace.confirmArchive(conversationId, async () => {
+    await api.archiveConversation(conversationId);
+    handleConversationRemoved(conversationId);
+  });
 }
 
 async function archiveFromPalette(conversationId: string) {
+  if (workspace.isAssistant(conversationId)) return;
   try {
-    await api.archiveConversation(conversationId);
-    handleConversationArchived(conversationId);
+    await workspace.confirmArchive(conversationId, async () => {
+      await api.archiveConversation(conversationId);
+      handleConversationRemoved(conversationId);
+    });
   } catch (err) {
     console.error("Failed to archive conversation:", err);
   }
@@ -1135,7 +1245,15 @@ async function handlePopState() {
     return;
   }
   const slug = getSlugFromPath();
-  if (!slug) return;
+  if (!slug && !workspaceMode) return;
+  if (!slug) {
+    try {
+      await selectAssistant();
+    } catch (err) {
+      error.value = errorMessage(err);
+    }
+    return;
+  }
   const existingConv = conversations.value.find(
     (c) => c.slug === slug || c.conversation_id === slug,
   );
@@ -1172,7 +1290,10 @@ watch(
 );
 
 // ---- lifecycle ----
+let stopActivityHeartbeat: (() => void) | null = null;
 onMounted(() => {
+  // Activity only matters for auto-restarting into a verified build.
+  if (workspaceMode) stopActivityHeartbeat = startActivityHeartbeat();
   // Hydrate persistent terminals from the server.
   let cancelled = false;
   fetch("api/terminals")
@@ -1212,17 +1333,21 @@ onMounted(() => {
   };
 
   loadConversations();
+  refreshWorkspace();
 
   globalStreamHandle = connectGlobalStream({
     getHash: () => conversationListHash,
     onListPatch: handleConversationListPatch,
     onNotificationEvent: handleNotificationEvent,
     onModelsChanged: () => modelsRefreshTrigger.value++,
+    onWorkspaceChanged: refreshWorkspace,
     onStatusChange: (status) => (streamStatus.value = status),
     onResourceSnapshot: replaceResourceStatuses,
     onResourceStatus: applyResourceStatus,
+    onStaleBuild: () => (uiUpdated.value = true),
     onReconnect: () => {
       reconnectNonce.value++;
+      refreshWorkspace();
     },
   });
 
@@ -1233,6 +1358,7 @@ onMounted(() => {
 let terminalsHydrationCancel: (() => void) | null = null;
 
 onUnmounted(() => {
+  stopActivityHeartbeat?.();
   terminalsHydrationCancel?.();
   globalStreamHandle?.close();
   globalStreamHandle = null;

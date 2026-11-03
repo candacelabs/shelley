@@ -70,6 +70,9 @@ type APIMessage struct {
 	// it; nil otherwise (agent/tool/system rows, or direct/unauthenticated
 	// access without the header).
 	UserEmail *string `json:"user_email,omitempty"`
+	// ExternalMessageID is the channel's id for a user message that came
+	// from an external chat, such as the user's phone.
+	ExternalMessageID *string `json:"external_message_id,omitempty"`
 }
 
 // ConversationState represents the current state of a conversation.
@@ -98,7 +101,8 @@ type ConversationWithState struct {
 
 // StreamResponse represents the response format for conversation streaming
 type StreamResponse struct {
-	ModelsChanged bool `json:"models_changed,omitempty"`
+	ModelsChanged    bool `json:"models_changed,omitempty"`
+	WorkspaceChanged bool `json:"workspace_changed,omitempty"`
 	// ConversationID identifies which conversation this per-conversation
 	// event belongs to. The unified /api/stream2 delivers events for all
 	// active conversations on a single connection; clients route by this
@@ -113,6 +117,9 @@ type StreamResponse struct {
 	ConversationListPatch *ConversationListPatchEvent `json:"conversation_list_patch,omitempty"`
 	// Heartbeat indicates this is a heartbeat message (no new data, just keeping connection alive)
 	Heartbeat bool `json:"heartbeat,omitempty"`
+	// UIBuild is the server's UI build (ui.BuildID), sent on each /api/stream2
+	// connection so a page from an older build reloads.
+	UIBuild string `json:"ui_build,omitempty"`
 	// NotificationEvent is set when a notification-worthy event occurs (e.g. agent finished).
 	NotificationEvent *notifications.Event `json:"notification_event,omitempty"`
 	// ResourceStatus is global, including an immediate snapshot of each kind on reconnect.
@@ -192,6 +199,7 @@ func toAPIMessages(messages []generated.Message) []APIMessage {
 			ModelName:           msg.ModelName.Ptr(),
 			ForkedFromMessageID: msg.ForkedFromMessageID.Ptr(),
 			UserEmail:           msg.UserEmail.Ptr(),
+			ExternalMessageID:   msg.ExternalMessageID.Ptr(),
 		}
 		apiMessages[i] = apiMsg
 	}
@@ -234,6 +242,14 @@ func llmDataForAPI(llmData *string, msgType, messageID string) (*string, *bool) 
 				changed = true
 			}
 		}
+		if msgType == string(db.MessageTypeAgent) && msg.Content[i].Type == llm.ContentTypeToolUse && msg.Content[i].ToolName == claudetool.MessageUserName {
+			// message_user's text is the agent's reply to the user, drawn
+			// from the tool input rather than a text block.
+			if stripped, ok := stripMessageUserCitations(msg.Content[i].ToolInput); ok {
+				msg.Content[i].ToolInput = stripped
+				changed = true
+			}
+		}
 		if msg.Content[i].OpenAIResponsesReasoning != nil {
 			msg.Content[i].OpenAIResponsesReasoning = nil
 			changed = true
@@ -248,6 +264,34 @@ func llmDataForAPI(llmData *string, msgType, messageID string) (*string, *bool) 
 	}
 	s := string(stripped)
 	return &s, endOfTurnPtr
+}
+
+// stripMessageUserCitations strips inline citation markers from a
+// message_user tool input's text, keeping every other field as is. It
+// reports false when there is nothing to change.
+func stripMessageUserCitations(input json.RawMessage) (json.RawMessage, bool) {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(input, &fields) != nil {
+		return nil, false
+	}
+	var text string
+	if json.Unmarshal(fields["text"], &text) != nil {
+		return nil, false
+	}
+	stripped := llm.StripInlineCitationMarkers(text)
+	if stripped == text {
+		return nil, false
+	}
+	b, err := json.Marshal(stripped)
+	if err != nil {
+		return nil, false
+	}
+	fields["text"] = b
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
 }
 
 func extractEndOfTurn(raw string) (bool, bool) {
@@ -361,6 +405,10 @@ type Server struct {
 	notifDispatcher          *notifications.Dispatcher
 	conversationListStream   *conversationListStream
 	conversationListGitCache *conversationListGitCache
+	workspace                workspaceState
+	conversationVMs          conversationVMState
+	baseVMSetupMu            sync.Mutex // serializes starting base VM setup conversations
+	customizations           customizationState
 	integrationSkills        *integrationSkillCache
 	listIntegrations         integrationLister
 	// fileListCache memoizes working-directory file listings for the fuzzy
@@ -388,8 +436,9 @@ type Server struct {
 	channelClient *http.Client
 	// channelDebug is the in-memory chat service behind /debug/channels.
 	channelDebug      channelDebug
-	listenPort        int    // TCP port the server is listening on
-	socketPath        string // Unix socket the server listens on, or ""
+	listenPort        int                    // TCP port the server is listening on
+	webOrigin         atomic.Pointer[string] // see rememberWebOrigin
+	socketPath        string                 // Unix socket the server listens on, or ""
 	terminals         *TerminalSessions
 	mcp               *mcp.Manager
 	exitDelay         time.Duration
@@ -404,14 +453,7 @@ type Server struct {
 	liveCalls         liveCalls
 	// reflectionEmoji fetches the VM emoji for the favicon. Tests replace it to
 	// cover reflection-present and standalone behavior without ambient metadata.
-	reflectionEmoji           func(context.Context) string
-	commitTourMu              sync.Mutex
-	commitTourJobs            map[string]*commitTourJob
-	commitTourRun             commitTourRunner
-	commitTourRecoverySlots   chan struct{}
-	commitTourRecoveryMu      sync.Mutex
-	commitTourRecoveryRunning bool
-	commitTourRecoveryPending bool
+	reflectionEmoji func(context.Context) string
 
 	// Banner, when non-empty, is shown in a full-width bar at the top of
 	// the UI. Useful for marking demo instances so they're not confused
@@ -467,34 +509,35 @@ func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool
 	}
 	liveURL := liveSessionEndpoint()
 	s := &Server{
-		db:                      database,
-		llmManager:              llmManager,
-		toolSetConfig:           toolSetConfig,
-		activeConversations:     make(map[string]*ConversationManager),
-		stoppedParents:          make(map[string]bool),
-		stoppingParents:         make(map[string]bool),
-		deletingConversations:   make(map[string]bool),
-		logger:                  logger,
-		predictableOnly:         predictableOnly,
-		defaultModel:            defaultModel,
-		requireHeader:           requireHeader,
-		versionChecker:          NewVersionChecker(),
-		notifDispatcher:         notifications.NewDispatcher(logger),
-		shutdownCh:              make(chan struct{}),
-		hooksDir:                defaultHooksDir(),
-		exitDelay:               500 * time.Millisecond,
-		exitProcess:             os.Exit,
-		mediaRun:                runMediaCommand,
-		transcriber:             newOpenAIRecordingTranscriber(llmManager, predictableOnly),
-		transcriptionJobs:       make(map[string]transcriptionJob),
-		liveSessionURL:          liveURL,
-		liveSessionKey:          liveSessionAPIKey(liveURL),
-		liveSessionClient:       &http.Client{Timeout: 25 * time.Second},
-		channelClient:           &http.Client{Timeout: 30 * time.Second},
-		channelChatLocks:        make(map[string]*channelChatLock),
-		reflectionEmoji:         cachedReflectionEmoji,
-		commitTourJobs:          make(map[string]*commitTourJob),
-		commitTourRecoverySlots: make(chan struct{}, 2),
+		db:                    database,
+		llmManager:            llmManager,
+		toolSetConfig:         toolSetConfig,
+		activeConversations:   make(map[string]*ConversationManager),
+		stoppedParents:        make(map[string]bool),
+		stoppingParents:       make(map[string]bool),
+		deletingConversations: make(map[string]bool),
+		logger:                logger,
+		predictableOnly:       predictableOnly,
+		defaultModel:          defaultModel,
+		requireHeader:         requireHeader,
+		versionChecker:        NewVersionChecker(),
+		notifDispatcher:       notifications.NewDispatcher(logger),
+		shutdownCh:            make(chan struct{}),
+		conversationVMs:       conversationVMState{cleanup: make(chan struct{}, 1), active: make(chan struct{})},
+		workspace:             workspaceState{reports: make(chan struct{}, 1)},
+		customizations:        customizationState{deps: defaultCustomizationDependencies(), kick: make(chan struct{}, 1)},
+		hooksDir:              defaultHooksDir(),
+		exitDelay:             500 * time.Millisecond,
+		exitProcess:           os.Exit,
+		mediaRun:              runMediaCommand,
+		transcriber:           newOpenAIRecordingTranscriber(llmManager, predictableOnly),
+		transcriptionJobs:     make(map[string]transcriptionJob),
+		liveSessionURL:        liveURL,
+		liveSessionKey:        liveSessionAPIKey(liveURL),
+		liveSessionClient:     &http.Client{Timeout: 25 * time.Second},
+		channelClient:         &http.Client{Timeout: 30 * time.Second},
+		channelChatLocks:      make(map[string]*channelChatLock),
+		reflectionEmoji:       cachedReflectionEmoji,
 	}
 
 	s.mcp = mcp.NewManager(database, s.mcpLoginURL)
@@ -512,7 +555,13 @@ func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool
 	// only when a terminal is spawned, so most test servers leave nothing.
 	var termDir string
 	if DBPath != "" {
-		termDir = filepath.Join(filepath.Dir(DBPath), "terminals")
+		// The child's cwd is the terminal's directory, not ours: every path
+		// handed to it (socket, pid and exit files) must be absolute.
+		dbDir, err := filepath.Abs(filepath.Dir(DBPath))
+		if err != nil {
+			panic(fmt.Errorf("resolve db directory: %w", err))
+		}
+		termDir = filepath.Join(dbDir, "terminals")
 	} else {
 		termDir = filepath.Join(os.TempDir(), "shelley-terminals-"+rand.Text()[:10])
 	}
@@ -587,10 +636,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	api.HandleFunc("POST /api/create-directory", s.handleCreateDirectory)
 	api.Handle("GET /api/git/repos", compressionHandler(http.HandlerFunc(s.handleGitRepos)))
 	api.Handle("GET /api/git/diffs", compressionHandler(http.HandlerFunc(s.handleGitDiffs)))
-	api.Handle("GET /api/git/tour", compressionHandler(http.HandlerFunc(s.handleGitTour)))
 	api.Handle("GET /api/git/highlights", compressionHandler(http.HandlerFunc(s.handleGitHighlights)))
-	api.Handle("GET /api/git/tour/status", compressionHandler(http.HandlerFunc(s.handleCommitTourStatus)))
-	api.HandleFunc("GET /api/git/tour/media", s.handleGitTourMedia) // Already-compressed images and video
 	api.Handle("GET /api/git/graph", compressionHandler(http.HandlerFunc(s.handleGitGraph)))
 	api.Handle("GET /api/git/commit-detail", compressionHandler(http.HandlerFunc(s.handleGitCommitDetail)))
 	api.Handle("GET /api/git/diffs/", compressionHandler(http.HandlerFunc(s.handleGitDiffFiles)))
@@ -634,6 +680,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 	s.registerMCPRoutes(api, mux)
 	s.registerProfileRoutes(api)
+	s.registerWorkspaceRoutes(api)
 
 	// Notification channels API
 	api.HandleFunc("GET /api/notification-channels", s.handleListNotificationChannels)
@@ -653,6 +700,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 	// Models API (dynamic list refresh)
 	api.Handle("POST /api/models/refresh", compressionHandler(http.HandlerFunc(s.handleModelRefresh)))
+	api.HandleFunc("POST /api/model-upgrade/dismiss", s.handleDismissModelUpgrade)
+	api.HandleFunc("POST /api/model-upgrade/apply-all", s.handleUpgradeAllModels)
+	api.HandleFunc("POST /api/model-upgrade/prompt-dismissed", s.handleDismissUpgradePrompt)
 	api.Handle("GET /api/models", compressionHandler(http.HandlerFunc(s.handleModels)))
 	api.HandleFunc("GET /api/tools", s.handleTools)
 
@@ -1085,7 +1135,14 @@ func (s *Server) getOrCreateConversationManager(ctx context.Context, conversatio
 		}
 		onStateChange := func(state ConversationState) { s.publishConversationState(state) }
 
+		// A VM conversation, subagents included, works on the VM
+		// from a scratch directory here: bash and patch target either.
+		vm, err := s.conversationVMTools(ctx, conversation)
+		if err != nil {
+			return nil, err
+		}
 		config := s.toolSetConfig
+		config.VM = vm
 		if role != roleTopLevel {
 			// Only top-level conversations can spawn subagents.
 			config.SubagentDepth++
@@ -1100,6 +1157,14 @@ func (s *Server) getOrCreateConversationManager(ctx context.Context, conversatio
 			manager.resolveModelService = snapshots.GetServiceSnapshot
 		}
 		manager.role = role
+		if role == roleTopLevel {
+			manager.profileMention = s.profileMention
+			manager.profileModelService = s.llmManager.GetService
+			manager.deferUserMessage = func(ctx context.Context, model string, message llm.Message) error {
+				return manager.queueMessageLocked(ctx, s, model, message, false)
+			}
+		}
+		manager.prepareConversationVM = func() { s.prepareConversationVM(conversationID) }
 		manager.onTurnStartRejected = func() { go manager.drainPendingMessages(s) }
 		manager.followProfile = func(ctx context.Context) (llm.Service, string, error) {
 			return s.followProfile(ctx, manager)
@@ -1109,6 +1174,8 @@ func (s *Server) getOrCreateConversationManager(ctx context.Context, conversatio
 		}
 		if role == roleTopLevel && conversation.ExternalEndpoint.Valid {
 			manager.userChat = channelChat{s: s, conversationID: conversationID}
+		} else if role == roleTopLevel && s.isAssistant(conversationID) {
+			manager.userChat = assistantChat{s: s, conversationID: conversationID}
 		}
 		manager.userEmail = userEmail
 		manager.serverPort = s.listenPort
@@ -1116,7 +1183,19 @@ func (s *Server) getOrCreateConversationManager(ctx context.Context, conversatio
 		manager.keepRecentTokens = s.keepRecentTokens()
 		manager.idleCompactionMinTokens = s.idleCompactionMinTokensOrDefault()
 		switch role {
+		case roleTopLevel:
+			manager.decorateService = func(service llm.Service) (llm.Service, error) {
+				if vm != nil {
+					return &workspaceService{Service: service, server: s, conversationID: conversationID, vm: true}, nil
+				}
+				return s.projectService(conversationID, service)
+			}
 		case roleSubagent:
+			if vm != nil {
+				manager.decorateService = func(service llm.Service) (llm.Service, error) {
+					return &workspaceService{Service: service, server: s, conversationID: conversationID, vm: true}, nil
+				}
+			}
 			manager.rewriteFinalReply = func(ctx context.Context, reply llm.Message) (llm.Message, bool) {
 				return s.reportUnreportedReply(ctx, manager, reply)
 			}
@@ -1663,6 +1742,7 @@ func (s *Server) publishConversationState(state ConversationState) {
 	// and would just be noise for the user.
 	var notifEvent *notifications.Event
 	if !state.Working {
+		s.reconcileCustomizationsAfterTurn(state.ConversationID)
 		conv, convErr := s.db.GetConversationByID(context.Background(), state.ConversationID)
 		isSubagent := convErr == nil && isManagedChild(*conv)
 		// Honor an explicit per-conversation opt-out: conversations created
@@ -1670,7 +1750,10 @@ func (s *Server) publishConversationState(state ConversationState) {
 		// (push, email, discord, ntfy) and hooks, same as subagents. So do
 		// channel conversations, which the user follows in the chat.
 		notifyDisabled := convErr == nil && (db.ParseConversationOptions(conv.ConversationOptions).DisableNotifications || conv.ExternalConversationID.Valid)
-		suppressNotify := isSubagent || notifyDisabled
+		// The workspace Assistant talks to the user directly (message_user),
+		// so its turn ends are not announced: no push to iOS (exe.dev notify
+		// gateway or app hooks), channels, or browser.
+		suppressNotify := isSubagent || notifyDisabled || s.isAssistant(state.ConversationID)
 		if !suppressNotify {
 			// Work still running for this conversation will wake it again when
 			// it finishes, so that later turn is the one worth notifying about.
@@ -1879,11 +1962,31 @@ func (s *Server) Start(port string) error {
 // reverse order: last added = first executed).
 func (s *Server) tcpHandler(mux http.Handler) http.Handler {
 	h := LoggerMiddleware(s.logger)(mux)
+	h = s.rememberWebOrigin(h)
+	h = s.trackUserActivity(h)
 	h = http.NewCrossOriginProtection().Handler(h)
 	if s.requireHeader != "" {
 		h = RequireHeaderMiddleware(s.requireHeader)(h)
 	}
 	return h
+}
+
+// rememberWebOrigin, in workspace mode, records the origin the user's
+// browser reaches Shelley at, behind whatever proxy, so the Assistant can
+// send full links to it. The latest browser request wins.
+func (s *Server) rememberWebOrigin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.assistantID() == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if origin := r.Header.Get("Origin"); origin != "" && r.Header.Get("Sec-Fetch-Site") == "same-origin" {
+			if cur := s.webOrigin.Load(); cur == nil || *cur != origin {
+				s.webOrigin.Store(&origin)
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // StartWithListeners starts the HTTP server on the given web listener (TCP, or
@@ -1922,6 +2025,16 @@ func (s *Server) StartWithListeners(tcpListener net.Listener, socketPath string)
 		s.logger.Error("Failed to recover agent_working state; serving anyway", "error", err)
 	} else if err != nil {
 		s.logger.Error("Failed to recover agent_working state", "error", err)
+		return err
+	}
+	// Action runs the previous process left running ended with it.
+	if err := s.db.InterruptActionRuns(context.Background()); err != nil {
+		return fmt.Errorf("interrupt action runs: %w", err)
+	}
+
+	// Workspace mode's Assistant exists before any request needs it.
+	if _, err := s.ensureWorkspace(context.Background()); err != nil {
+		s.logger.Error("Failed to load the workspace", "error", err)
 		return err
 	}
 
@@ -2021,7 +2134,10 @@ func (s *Server) StartWithListeners(tcpListener net.Listener, socketPath string)
 	// Recover durable queued transcription workers independently of browser
 	// connections and request lifetimes.
 	go s.recoverQueuedTranscriptions(context.Background())
-	go s.recoverCommitTourWorkers(context.Background())
+	s.startConversationVMCleanup()
+	s.startActionReports()
+	s.startAutoRestart()
+	s.startCustomizations()
 
 	// Wait for shutdown signal or server error
 	quit := make(chan os.Signal, 1)
@@ -2031,6 +2147,11 @@ func (s *Server) StartWithListeners(tcpListener net.Listener, socketPath string)
 	case err := <-serverErrCh:
 		s.logger.Error("Server failed", "error", err)
 		close(s.shutdownCh)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if waitErr := s.waitActions(ctx); waitErr != nil {
+			s.logger.Error("Project actions did not stop", "error", waitErr)
+		}
 		return err
 	case <-quit:
 		s.logger.Info("Shutting down server")
@@ -2044,6 +2165,9 @@ func (s *Server) StartWithListeners(tcpListener net.Listener, socketPath string)
 	// Graceful shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	if err := s.waitActions(ctx); err != nil {
+		s.logger.Error("Project actions did not stop", "error", err)
+	}
 
 	// Stop active conversation loops so their tool sets (notably the browser,
 	// which spawns headless-shell + descendants) are cleaned up. Without this
@@ -2136,8 +2260,7 @@ func (s *Server) tryAutoUpgrade() {
 	timeout := time.After(1 * time.Hour)
 
 	// Check immediately first
-	if s.isServerIdle() {
-		s.performUpgradeAndRestart(ctx, versionInfo)
+	if s.isServerIdle() && s.performUpgradeAndRestart(ctx, versionInfo) {
 		return
 	}
 
@@ -2146,8 +2269,7 @@ func (s *Server) tryAutoUpgrade() {
 	for {
 		select {
 		case <-ticker.C:
-			if s.isServerIdle() {
-				s.performUpgradeAndRestart(ctx, versionInfo)
+			if s.isServerIdle() && s.performUpgradeAndRestart(ctx, versionInfo) {
 				return
 			}
 			s.logger.Debug("Auto-upgrade: server still busy, will retry")
@@ -2173,20 +2295,28 @@ func (s *Server) isServerIdle() bool {
 	return true
 }
 
-// performUpgradeAndRestart performs the upgrade and restarts the server
-func (s *Server) performUpgradeAndRestart(ctx context.Context, versionInfo *VersionInfo) {
+// performUpgradeAndRestart performs the upgrade and restarts the server. It
+// returns false, having done nothing, if the server can't restart yet (a
+// project action runs).
+func (s *Server) performUpgradeAndRestart(ctx context.Context, versionInfo *VersionInfo) bool {
+	if err := s.prepareRestart(ctx); err != nil {
+		s.logger.Info("Auto-upgrade: can't restart yet", "error", err)
+		return false
+	}
 	s.logger.Info("Auto-upgrade: starting upgrade", "current", versionInfo.CurrentTag, "latest", versionInfo.LatestTag)
 
 	err := s.versionChecker.DoUpgrade(ctx)
 	if err != nil {
+		s.releaseRestart()
 		s.logger.Error("Auto-upgrade failed", "error", err)
-		return
+		return true
 	}
 
 	s.logger.Info("Auto-upgrade complete, restarting")
 
 	time.Sleep(100 * time.Millisecond)
 	s.restartAfterUpgrade()
+	return true
 }
 
 // listenSocket listens on the Unix socket at socketPath, made absolute, or

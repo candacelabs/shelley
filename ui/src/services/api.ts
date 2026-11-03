@@ -59,8 +59,18 @@ export interface BackgroundJob {
 
 // What the status-bar hook printed for a conversation (server StatusBar). All
 // empty means show nothing.
-export interface StatusBar {
+export interface StatusBarItem {
   body?: string;
+  bgcolor?: string;
+  color?: string;
+  title?: string;
+  // Validated by the server; see HOOKS.md for the actions and their args.
+  action?: string;
+  args?: { commit?: string; url?: string };
+}
+
+export interface StatusBar {
+  items?: StatusBarItem[];
   bgcolor?: string;
   color?: string;
   error?: string;
@@ -72,6 +82,27 @@ export interface SkillDescriptor {
   activate: string;
   source_path?: string;
   origin?: string;
+  mcp_server?: string;
+  mcp_tool?: string;
+  parameters?: ToolSchema;
+}
+
+function mcpActivation(name: string): string {
+  return `shelley mcp list '${name.replace(/'/g, "'\\''")}' -schema`;
+}
+
+function withMcpSelections(request: ChatRequest): ChatRequest {
+  const tools = request.skills?.filter((name) => name.startsWith("mcp:")) ?? [];
+  if (!tools.length) return request;
+  const instructions = tools.map((name) => {
+    const tool = name.slice(4);
+    return `Use the MCP tool ${JSON.stringify(tool)} for this task. First read its documentation and input schema with \`${mcpActivation(tool)}\`, then call it with shelley mcp call and the appropriate arguments.`;
+  });
+  return {
+    ...request,
+    message: `${request.message}\n\n${instructions.join("\n")}`,
+    skills: request.skills?.filter((name) => !name.startsWith("mcp:")),
+  };
 }
 
 export interface AvailableModel {
@@ -114,62 +145,9 @@ export interface IntegrationsResponse {
   integrations: AttachedIntegration[];
 }
 
-export interface GitTourHeaderEntry {
-  header: string;
-}
-
-export interface GitTourPatchEntry {
-  patch: string;
-  comment?: string;
-  trivial?: boolean;
-}
-
-/** A screenshot or recording, stored in the repository as a git blob. */
-export interface GitTourMediaEntry {
-  blob: string;
-  mime: string;
-  name: string;
-  comment?: string;
-}
-
-export type GitTourEntry = GitTourHeaderEntry | GitTourPatchEntry | GitTourMediaEntry;
-
-/** A key design decision or a question for the reader. */
-export interface GitTourItem {
-  title: string;
-  body?: string;
-}
-
-export interface GitTour {
-  version: 1;
-  title?: string;
-  intro?: string;
-  decisions?: GitTourItem[];
-  questions?: GitTourItem[];
-  chunks: GitTourEntry[];
-}
-
-export type GitTourBuildState = "absent" | "building" | "present" | "failed";
-
-export interface GitTourBuildStatus {
-  status: GitTourBuildState;
-  hash: string;
-  repository?: string;
-  worker_conversation_id?: string;
-  worker_slug?: string;
-  error?: string;
-  progress?: { step: string; at: string }[];
-}
-
-export interface GitTourResponse {
-  hash: string;
-  tour: GitTour;
-}
-
 export interface ChatAcceptedResponse {
   status?: string;
   btw?: BtwReaderDescriptor;
-  tour?: GitTourBuildStatus;
 }
 
 export interface BtwSummaryReceipt {
@@ -241,6 +219,41 @@ class ApiService {
     });
     if (!response.ok) {
       throw await responseError(response, "Could not send Slack test message");
+    }
+  }
+
+  async dismissModelUpgrade(from: string, to: string): Promise<void> {
+    const response = await fetch(`${this.baseUrl}/model-upgrade/dismiss`, {
+      method: "POST",
+      headers: this.postHeaders,
+      body: JSON.stringify({ from, to }),
+    });
+    if (!response.ok) {
+      throw await responseError(response, "Failed to dismiss upgrade");
+    }
+  }
+
+  // Moves the other conversations in the family `from` belongs to onto their
+  // upgrades.
+  async upgradeAllModels(from: string, to: string): Promise<{ upgraded: number; skipped: number }> {
+    const response = await fetch(`${this.baseUrl}/model-upgrade/apply-all`, {
+      method: "POST",
+      headers: this.postHeaders,
+      body: JSON.stringify({ from, to }),
+    });
+    if (!response.ok) {
+      throw await responseError(response, "Failed to upgrade other conversations");
+    }
+    return response.json();
+  }
+
+  async dismissUpgradePrompt(): Promise<void> {
+    const response = await fetch(`${this.baseUrl}/model-upgrade/prompt-dismissed`, {
+      method: "POST",
+      headers: this.postHeaders,
+    });
+    if (!response.ok) {
+      throw await responseError(response, "Failed to record the answer");
     }
   }
 
@@ -357,7 +370,7 @@ class ApiService {
     const response = await fetch(`${this.baseUrl}/conversations/new`, {
       method: "POST",
       headers: this.postHeaders,
-      body: JSON.stringify(request),
+      body: JSON.stringify(withMcpSelections(request)),
     });
     if (!response.ok) {
       throw await responseError(response, "Failed to start conversation");
@@ -478,7 +491,7 @@ class ApiService {
     const response = await fetch(`${this.baseUrl}/conversation/${conversationId}/chat`, {
       method: "POST",
       headers: this.postHeaders,
-      body: JSON.stringify(request),
+      body: JSON.stringify(withMcpSelections(request)),
       signal,
     });
     if (!response.ok) {
@@ -808,40 +821,6 @@ class ApiService {
     return response.json();
   }
 
-  async getGitTourStatus(cwd: string, hash: string): Promise<GitTourBuildStatus> {
-    const params = new URLSearchParams({ cwd, hash });
-    const response = await fetch(`${this.baseUrl}/git/tour/status?${params}`);
-    if (!response.ok) {
-      throw await responseError(response, "Failed to check commit tour status");
-    }
-    return response.json();
-  }
-
-  async requestGitTour(
-    conversationId: string,
-    cwd: string,
-    hash: string,
-  ): Promise<GitTourBuildStatus> {
-    const accepted = await this.sendMessage(conversationId, {
-      message: `/tour ${hash}\n${cwd}`,
-    });
-    if (!accepted.tour) throw new Error("Commit tour request returned no status");
-    return accepted.tour;
-  }
-
-  gitTourMediaURL(cwd: string, blob: string): string {
-    return `${this.baseUrl}/git/tour/media?${new URLSearchParams({ cwd, blob })}`;
-  }
-
-  async getGitTour(cwd: string, hash: string): Promise<GitTourResponse> {
-    const params = new URLSearchParams({ cwd, hash });
-    const response = await fetch(`${this.baseUrl}/git/tour?${params}`);
-    if (!response.ok) {
-      throw await responseError(response, "Failed to get commit tour");
-    }
-    return response.json();
-  }
-
   // Null when the commit has no highlights, or they no longer match it.
   async getGitHighlights(cwd: string, hash: string): Promise<CommitHighlights | null> {
     const params = new URLSearchParams({ cwd, hash });
@@ -890,21 +869,17 @@ class ApiService {
     return response.json();
   }
 
-  // `oldPath` names the left-hand file when the commit renamed it; without it
-  // a renamed file comes back with empty old content.
   async getGitFileDiff(
     diffId: string,
     filePath: string,
     cwd: string,
     to?: string,
-    oldPath?: string,
   ): Promise<GitFileDiff> {
     const toParam = to ? `&to=${encodeURIComponent(to)}` : "";
-    const oldPathParam = oldPath ? `&oldPath=${encodeURIComponent(oldPath)}` : "";
     // Encode per segment so names containing '#', '?' or '%' survive the URL.
     const encodedPath = filePath.split("/").map(encodeURIComponent).join("/");
     const response = await fetch(
-      `${this.baseUrl}/git/file-diff/${diffId}/${encodedPath}?cwd=${encodeURIComponent(cwd)}${toParam}${oldPathParam}`,
+      `${this.baseUrl}/git/file-diff/${diffId}/${encodedPath}?cwd=${encodeURIComponent(cwd)}${toParam}`,
     );
     if (!response.ok) {
       throw await responseError(response, "Failed to get file diff");
@@ -956,12 +931,60 @@ class ApiService {
     cwd: string,
     conversationId: string | null,
     signal?: AbortSignal,
-  ): Promise<{ skills: SkillDescriptor[] }> {
+  ): Promise<{ skills: SkillDescriptor[]; warnings?: string[] }> {
     const params = new URLSearchParams({ cwd });
     if (conversationId) params.set("conversation_id", conversationId);
     const response = await fetch(`${this.baseUrl}/skills?${params}`, { signal });
     if (!response.ok) throw await responseError(response, "Failed to load skills");
-    return response.json();
+    const catalog: { skills: SkillDescriptor[] } = await response.json();
+    let servers: McpServer[];
+    try {
+      servers = await mcpServersApi.list(signal);
+    } catch (error) {
+      signal?.throwIfAborted();
+      return { ...catalog, warnings: [error instanceof Error ? error.message : String(error)] };
+    }
+    const tools = await Promise.allSettled(
+      servers.map(async (server) => {
+        const deadline = AbortSignal.timeout(5000);
+        const toolSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+        const available = await mcpServersApi.tools(server.name, toolSignal);
+        const valid = available.filter((tool) => /^[A-Za-z0-9_.-]{1,128}$/.test(tool.name));
+        return {
+          skills: valid.map((tool): SkillDescriptor => {
+            const qualifiedName = `${server.name}.${tool.name}`;
+            return {
+              name: `mcp:${qualifiedName}`,
+              mcp_server: server.name,
+              mcp_tool: tool.name,
+              description: tool.description || `Call ${qualifiedName}.`,
+              activate: mcpActivation(qualifiedName),
+              origin: "MCP tool",
+              source_path: server.name,
+              parameters: tool.inputSchema,
+            };
+          }),
+          warnings:
+            valid.length < available.length
+              ? [`${server.name}: skipped tools with invalid names`]
+              : [],
+        };
+      }),
+    );
+    signal?.throwIfAborted();
+    return {
+      skills: [
+        ...catalog.skills,
+        ...tools.flatMap((result) => (result.status === "fulfilled" ? result.value.skills : [])),
+      ],
+      warnings: tools.flatMap((result, index) =>
+        result.status === "rejected"
+          ? [
+              `${servers[index].name}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
+            ]
+          : result.value.warnings,
+      ),
+    };
   }
 
   // findFiles fuzzy-searches files under `dir` server-side. `query` is the
@@ -1598,8 +1621,8 @@ async function mcpFetch(path: string, failure: string, init?: RequestInit): Prom
 const mcpPath = (name: string) => `/${encodeURIComponent(name)}`;
 
 export const mcpServersApi = {
-  async list(): Promise<McpServer[]> {
-    return (await mcpFetch("", "Failed to load MCP servers")).json();
+  async list(signal?: AbortSignal): Promise<McpServer[]> {
+    return (await mcpFetch("", "Failed to load MCP servers", { signal })).json();
   },
   async save(server: McpServer, isNew: boolean): Promise<void> {
     await mcpFetch(isNew ? "" : mcpPath(server.name), "Failed to save MCP server", {
@@ -1614,7 +1637,7 @@ export const mcpServersApi = {
   async logout(name: string): Promise<void> {
     await mcpFetch(`${mcpPath(name)}/logout`, "Failed to log out", { method: "POST" });
   },
-  async tools(name: string, signal: AbortSignal): Promise<McpTool[]> {
+  async tools(name: string, signal?: AbortSignal): Promise<McpTool[]> {
     const response = await mcpFetch(`${mcpPath(name)}/tools`, "Failed to list tools", { signal });
     return ((await response.json()) as { tools: McpTool[] }).tools;
   },
@@ -1624,6 +1647,24 @@ async function profilesFetch(path: string, failure: string, init?: RequestInit) 
   const response = await fetch(`api${path}`, init);
   if (!response.ok) throw await responseError(response, failure);
   return response;
+}
+
+/** Calls path, sending body as JSON if given, and returns the JSON reply
+ *  (undefined for 204 No Content); a failure throws "<failure>: <reason>". */
+export async function apiJSON<T>(
+  path: string,
+  failure: string,
+  method = "GET",
+  body?: unknown,
+): Promise<T> {
+  const response = await fetch(
+    path,
+    body === undefined
+      ? { method }
+      : { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+  );
+  if (!response.ok) throw await responseError(response, failure);
+  return response.status === 204 ? (undefined as T) : response.json();
 }
 
 export const profilesApi = {

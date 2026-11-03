@@ -127,6 +127,8 @@ export interface Model {
   // available sibling. The picker keeps tier-2 models behind a "more models"
   // toggle. Absent/0 is treated as tier 1 by the UI.
   tier?: number;
+  // Ready model that replaces this one; kind is "version" or "generation".
+  upgrade?: { to: string; kind: "version" | "generation"; line: string };
   // Reasoning level applied when a conversation carries no explicit
   // thinking_level override. Empty when the provider picks its own default.
   default_reasoning_level?: string;
@@ -174,6 +176,9 @@ export interface Profile extends Settings {
   builtin: boolean;
   /** Saved by the user rather than following shipped defaults. */
   user_edited: boolean;
+  /** A project's profile: conversations in it belong to the project, and
+   *  don't switch to or from it. */
+  project: boolean;
   /** How voice calls speak for this profile; "" for no persona. Not a
    *  setting: conversations don't copy it, and calls read it as saved. */
   voice_prompt: string;
@@ -231,9 +236,12 @@ export interface StreamResponse extends Omit<StreamResponseForTS, "messages"> {
   context_window_size?: number;
   conversation_list_patch?: ConversationListPatchEvent;
   heartbeat?: boolean;
+  /** The server's UI build, on each stream connection. */
+  ui_build?: string;
   notification_event?: NotificationEvent;
   resource_status?: ResourceStatus;
   models_changed?: boolean;
+  workspace_changed?: boolean;
   tool_progress?: ToolProgress;
   stream_delta?: StreamDelta;
 }
@@ -249,6 +257,8 @@ export interface Link {
 export interface InitData {
   // The path Shelley is mounted at, ending in "/" (utils/basePath.ts).
   base_path?: string;
+  /** The UI build this page was served with (see StreamResponse.ui_build). */
+  ui_build?: string;
   models: Model[];
   default_model: string;
   default_cwd?: string;
@@ -270,6 +280,11 @@ export interface InitData {
   // (a gpt-transcribe route exists, e.g. from OPENAI_API_KEY).
   transcription_available?: boolean;
   user_email?: string;
+  // workspace mode: see utils/workspaceMode.ts.
+  workspace?: boolean;
+  // True once the "upgrade your other conversations too?" offer has been
+  // answered, so it is never made again.
+  model_upgrade_prompt_done?: boolean;
   banner?: string; // If set, shown as a top-of-page banner (e.g. to mark demo instances)
 }
 
@@ -290,8 +305,6 @@ export interface GitDiffInfo {
   additions: number;
   deletions: number;
   statsLoaded?: boolean;
-  // True when this commit has a guided tour git note.
-  hasTour?: boolean;
   // True when this commit has a highlights git note (see CommitHighlights).
   hasHighlights?: boolean;
   // Decorating refs (branches, tags, HEAD), like git log --decorate.
@@ -339,8 +352,6 @@ export interface GitGraphCommit {
   timestamp: number;
   refs: string[];
   isHead: boolean;
-  // True when this commit has a guided tour git note.
-  hasTour?: boolean;
   // True if this commit is the merge-base with @{upstream}.
   isMergeBase?: boolean;
 }
@@ -458,6 +469,19 @@ export function cwdChange(message: Message): { from: string; to: string } | null
     return { from: userData.from || "", to: userData.to || "" };
   } catch {
     return null;
+  }
+}
+
+// compactsSomething reports whether an in-place compaction record collapses
+// or trims anything; a skip only drops context nudges and earlier calls.
+export function compactsSomething(message: Message): boolean {
+  try {
+    const c =
+      (typeof message.user_data === "string" ? JSON.parse(message.user_data) : message.user_data) ||
+      {};
+    return Boolean(c.squishes?.length || c.trims?.length);
+  } catch {
+    return true;
   }
 }
 

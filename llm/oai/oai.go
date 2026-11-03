@@ -552,6 +552,9 @@ var (
 // Service provides chat completions.
 // Fields should not be altered concurrently with calling any method on Service.
 type Service struct {
+	// ReasoningOverride is advertised for this model at this endpoint; nil uses models.dev.
+	ReasoningOverride *modelsdev.ReasoningCapabilities
+
 	HTTPC        *http.Client    // defaults to http.DefaultClient if nil
 	APIKey       string          // optional, if not set will try to load from env var
 	Model        Model           // defaults to DefaultModel if zero value
@@ -580,6 +583,10 @@ type Service struct {
 	// "auto" resolve from models.dev; "none" disables replay explicitly.
 	ReasoningReplay ReasoningReplay
 }
+
+// GPTCharsPerToken is the characters per token of GPT's tokenizer, measured
+// on a mix of code, prose, JSON and command output.
+const GPTCharsPerToken = 3.61
 
 var _ llm.Service = (*Service)(nil)
 
@@ -780,7 +787,7 @@ func fromLLMContent(c llm.Content) (string, []openai.ToolCall) {
 				ID:   c.ID, // Use the content ID if provided
 				Function: openai.FunctionCall{
 					Name:      c.ToolName,
-					Arguments: string(c.ToolInput),
+					Arguments: string(canonicalToolInput(c.ToolInput)),
 				},
 			},
 		}
@@ -1084,6 +1091,13 @@ func toolArgumentsInput(arguments string) json.RawMessage {
 	return encoded
 }
 
+// canonicalToolInput is a tool call's input as sent back to the provider:
+// history from before llm.CanonicalToolInput may still repeat names.
+func canonicalToolInput(input json.RawMessage) json.RawMessage {
+	input, _ = llm.CanonicalToolInput(input)
+	return input
+}
+
 // toToolResultLLMContent converts a tool result message from OpenAI to llm.Content.
 func toToolResultLLMContent(msg openai.ChatCompletionMessage) llm.Content {
 	return llm.Content{
@@ -1269,7 +1283,7 @@ func chatInBandErrorRetryable(apiErr *openai.APIError) bool {
 	return responsesErrorRetryable(&responsesError{Message: apiErr.Message, Type: apiErr.Type, Code: code})
 }
 
-func (s *Service) consumeChatCompletionStream(stream *openai.ChatCompletionStream, onStream func(llm.StreamDelta)) (*llm.Response, error) {
+func (s *Service) consumeChatCompletionStream(ctx context.Context, stream *openai.ChatCompletionStream, onStream func(llm.StreamDelta)) (*llm.Response, error) {
 	msg := openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant}
 	headers := stream.Header()
 	var (
@@ -1305,6 +1319,7 @@ func (s *Service) consumeChatCompletionStream(stream *openai.ChatCompletionStrea
 			return nil, err
 		}
 		started = true
+		llm.ReportProgress(ctx)
 		if chunk.ID != "" {
 			id = chunk.ID
 		}
@@ -1417,6 +1432,9 @@ func (s *Service) DefaultReasoningLevel() string {
 	if s.DisableReasoning {
 		return ""
 	}
+	if effort, ok := overrideReasoningEffort(s.ReasoningOverride, &llm.Request{}, s.ThinkingLevel, s.ReasoningEffort); ok {
+		return defaultReasoningLevel(effort)
+	}
 	if s.ReasoningEffort != "" {
 		return s.ReasoningEffort
 	}
@@ -1443,8 +1461,17 @@ func (s *Service) MaxImageBytes() int {
 	return 20 * 1024 * 1024
 }
 
-func modelReasoningCapabilities(endpoint string, model Model) (modelsdev.ReasoningCapabilities, bool) {
-	return modelsdev.LookupReasoningCapabilities(cmp.Or(endpoint, model.URL), model.ModelName)
+// defaultReasoningLevel translates the wire spelling to the canonical API/UI
+// name. Provider-verbatim values otherwise remain untouched.
+func defaultReasoningLevel(effort string) string {
+	if effort == "none" {
+		return "off"
+	}
+	return effort
+}
+
+func modelReasoningCapabilities(override *modelsdev.ReasoningCapabilities, endpoint string, model Model) (modelsdev.ReasoningCapabilities, bool) {
+	return override.Lookup(cmp.Or(endpoint, model.URL), model.ModelName)
 }
 
 func advertisedReasoningLevels(caps modelsdev.ReasoningCapabilities, found bool) []llm.ThinkingLevel {
@@ -1472,24 +1499,29 @@ func clampKnownReasoningEffort(effort string, levels []llm.ThinkingLevel) string
 	return effortForThinkingLevel(llm.ClampThinkingLevel(level, levels))
 }
 
-// SupportsReasoning reports the models.dev capability when known. Unknown
-// models retain the historical default of supporting reasoning controls.
+// SetReasoningOverride configures endpoint controls before the service is used.
+func (s *Service) SetReasoningOverride(caps *modelsdev.ReasoningCapabilities) {
+	s.ReasoningOverride = caps
+}
+
+// SupportsReasoning uses endpoint metadata before models.dev. Unknown models
+// retain the historical default of supporting reasoning controls.
 func (s *Service) SupportsReasoning() bool {
 	if s.DisableReasoning {
 		return false
 	}
-	caps, found := modelReasoningCapabilities(s.ModelURL, cmp.Or(s.Model, DefaultModel))
+	caps, found := modelReasoningCapabilities(s.ReasoningOverride, s.ModelURL, cmp.Or(s.Model, DefaultModel))
 	return !found || caps.Supported
 }
 
-// SupportedReasoningLevels advertises exact effort levels from models.dev.
+// SupportedReasoningLevels advertises endpoint effort levels before models.dev.
 // Nil means the model has no exact effort metadata and callers use the
 // historical provider fallback.
 func (s *Service) SupportedReasoningLevels() []llm.ThinkingLevel {
 	if s.DisableReasoning {
 		return nil
 	}
-	caps, found := modelReasoningCapabilities(s.ModelURL, cmp.Or(s.Model, DefaultModel))
+	caps, found := modelReasoningCapabilities(s.ReasoningOverride, s.ModelURL, cmp.Or(s.Model, DefaultModel))
 	return advertisedReasoningLevels(caps, found)
 }
 
@@ -1613,6 +1645,9 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 			}
 		}
 	}
+	if effort, ok := overrideReasoningEffort(s.ReasoningOverride, ir, s.ThinkingLevel, s.ReasoningEffort); ok && !s.DisableReasoning {
+		req.ReasoningEffort = effort
+	}
 	body, err := prepareChatRequest(&req, policy)
 	if err != nil {
 		return nil, fmt.Errorf("serialize chat request: %w", err)
@@ -1686,7 +1721,7 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 			var stream *openai.ChatCompletionStream
 			stream, err = client.CreateChatCompletionStream(ctx, req)
 			if err == nil {
-				result, err = s.consumeChatCompletionStream(stream, ir.OnStream)
+				result, err = s.consumeChatCompletionStream(ctx, stream, ir.OnStream)
 				closeErr := stream.Close()
 				if err == nil && closeErr != nil {
 					err = closeErr

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -44,6 +45,7 @@ type Hooks struct {
 	OnSuccessfulRequest func(*llm.Request)
 	OnToolResponse      func(context.Context, ToolResponse) error
 	OnWarning           func(context.Context, string) error
+	OnRoutingWarning    RoutingNoticeRecordFunc
 	// RewriteFinalReply may turn a reply that would end the turn into tool
 	// calls, which then run as if the model had made them. It is consulted
 	// at most once per turn. A turn that ends with an error offers the
@@ -73,6 +75,7 @@ type RunConfig struct {
 	CurrentSystem func() []llm.SystemContent
 	Hooks         Hooks
 	Logger        *slog.Logger
+	modelRouting  *modelRouting
 }
 
 // Run executes one agent turn. It checks RunConfig.Pending before every model
@@ -115,6 +118,9 @@ func cloneContents(contents []llm.Content) []llm.Content {
 // without requesting another client-side tool call.
 func (l *RunConfig) run(ctx context.Context) error {
 	messages := cloneMessages(l.Messages)
+	if l.modelRouting == nil {
+		l.modelRouting = &modelRouting{}
+	}
 	iterations := 0
 	rewritten := false
 	for {
@@ -235,6 +241,12 @@ func (l *RunConfig) run(ctx context.Context) error {
 
 		l.Logger.Debug("received LLM response", "content_count", len(resp.Content), "stop_reason", resp.StopReason.String(), "usage", resp.Usage.String())
 
+		if ctx.Err() == nil {
+			if err := l.modelRouting.observe(ctx, resp, l.Hooks.OnRoutingWarning); err != nil {
+				l.Logger.Error("failed to record model routing notice", "error", err)
+			}
+		}
+
 		// Handle max tokens truncation BEFORE adding to history - truncated responses
 		// should not be added to history normally (they get special handling)
 		if resp.StopReason == llm.StopReasonMaxTokens {
@@ -269,6 +281,10 @@ func (l *RunConfig) run(ctx context.Context) error {
 				assistantMessage, toolUse, rewritten = m, true, true
 			}
 		}
+		// Calls run from the model's own input (malformed input is refused
+		// there); history keeps canonical input, which providers accept.
+		calls := assistantMessage.Content
+		assistantMessage = canonicalToolInputs(assistantMessage)
 		if toolUse {
 			if err := ctx.Err(); err != nil {
 				return err
@@ -286,7 +302,7 @@ func (l *RunConfig) run(ctx context.Context) error {
 		}
 
 		l.Logger.Debug("handling tool calls", "content_count", len(assistantMessage.Content))
-		if err := l.executeToolCalls(ctx, assistantMessage.Content, &messages); err != nil {
+		if err := l.executeToolCalls(ctx, calls, &messages); err != nil {
 			if errors.Is(err, errToolEndedTurn) {
 				return nil
 			}
@@ -297,21 +313,34 @@ func (l *RunConfig) run(ctx context.Context) error {
 
 // sendWithRetry issues one model request with transport retries. Provider-internal
 // retries own user-visible warnings; this catches transient failures that escape
-// the provider. The transport's idle timeout is the primary bound, while
-// maxTurnDuration is an absolute backstop for sockets kept alive without progress.
-// requestTrace retains correlation IDs even if the request fails without a response.
+// the provider. The request is aborted once it goes stallTimeout without a model
+// event, or after maxRequestDuration in total. requestTrace retains correlation IDs even if the request fails without
+// a response.
 func (l *RunConfig) sendWithRetry(ctx context.Context, req *llm.Request, requestTrace **llm.RequestTrace) (*llm.Response, error) {
-	llmCtx, cancel := context.WithTimeout(ctx, maxTurnDuration)
+	llmCtx, cancel := context.WithTimeoutCause(ctx, maxRequestDuration, errTooLong)
 	defer cancel()
+	llmCtx, stop := withStallTimeout(llmCtx, stallTimeout)
+	defer stop()
 	if l.PromptCacheKey != "" {
 		llmCtx = llmhttp.WithPromptCacheKey(llmCtx, l.PromptCacheKey)
 	}
 	llmCtx, *requestTrace = llm.WithRequestTrace(llmCtx)
+	resp, err := l.doWithRetry(llmCtx, req)
+	if err != nil && errors.Is(context.Cause(llmCtx), errStalled) {
+		return nil, &stallError{timeout: stallTimeout, cause: err}
+	}
+	if err != nil && errors.Is(context.Cause(llmCtx), errTooLong) {
+		return nil, &tooLongError{limit: maxRequestDuration, cause: err}
+	}
+	return resp, err
+}
+
+func (l *RunConfig) doWithRetry(ctx context.Context, req *llm.Request) (*llm.Response, error) {
 	const maxRetries = 2
 	var resp *llm.Response
 	var err error
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		resp, err = l.LLM.Do(llmCtx, req)
+		resp, err = l.LLM.Do(ctx, req)
 		if err == nil {
 			return resp, nil
 		}
@@ -325,11 +354,60 @@ func (l *RunConfig) sendWithRetry(ctx context.Context, req *llm.Request, request
 			"max_retries", maxRetries)
 		select {
 		case <-time.After(sleep):
-		case <-llmCtx.Done():
-			return nil, llmCtx.Err()
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		}
 	}
 	return resp, err
+}
+
+var (
+	errStalled = errors.New("no model output")
+	errTooLong = errors.New("request time limit reached")
+)
+
+// withStallTimeout returns a context that is canceled with errStalled once
+// timeout passes without llm.ReportProgress being called on it.
+func withStallTimeout(ctx context.Context, timeout time.Duration) (context.Context, func()) {
+	ctx, cancel := context.WithCancelCause(ctx)
+	timer := time.AfterFunc(timeout, func() { cancel(errStalled) })
+	ctx = llm.WithProgress(ctx, func() { timer.Reset(timeout) })
+	return ctx, func() {
+		timer.Stop()
+		cancel(nil)
+	}
+}
+
+// stallError reports a request aborted by withStallTimeout.
+type stallError struct {
+	timeout time.Duration
+	cause   error
+}
+
+func (e *stallError) Error() string {
+	return fmt.Sprintf("no model output for %s: %v", e.timeout, e.cause)
+}
+
+func (e *stallError) Unwrap() error { return e.cause }
+
+func (e *stallError) RequestErrorInfo() llm.RequestErrorInfo {
+	return llm.RequestErrorInfo{Retryable: true, IdleStallDuration: e.timeout}
+}
+
+// tooLongError reports a request aborted at maxRequestDuration.
+type tooLongError struct {
+	limit time.Duration
+	cause error
+}
+
+func (e *tooLongError) Error() string {
+	return fmt.Sprintf("request exceeded %s: %v", e.limit, e.cause)
+}
+
+func (e *tooLongError) Unwrap() error { return e.cause }
+
+func (e *tooLongError) RequestErrorInfo() llm.RequestErrorInfo {
+	return llm.RequestErrorInfo{Retryable: true}
 }
 
 // maxPauseContinuations bounds how many times we will re-request to resolve a
@@ -396,6 +474,19 @@ func (l *RunConfig) resolvePausedTurn(
 	resolved.Usage = totalUsage
 	resolved.StartTime = startTime // EndTime stays at the final continuation
 	return &resolved, nil
+}
+
+// canonicalToolInputs returns message with each tool call's input in the
+// form llm.CanonicalToolInput gives it.
+func canonicalToolInputs(message llm.Message) llm.Message {
+	content := slices.Clone(message.Content)
+	for i, c := range content {
+		if c.Type == llm.ContentTypeToolUse {
+			content[i].ToolInput, _ = llm.CanonicalToolInput(c.ToolInput)
+		}
+	}
+	message.Content = content
+	return message
 }
 
 func (l *RunConfig) emitResponse(ctx context.Context, message llm.Message, usage llm.Usage, failureMessage string) error {
@@ -749,6 +840,19 @@ func (l *RunConfig) executeToolCall(ctx context.Context, call llm.Content, tool 
 			ToolResult: []llm.Content{
 				{Type: llm.ContentTypeText, Text: fmt.Sprintf("Tool '%s' not found", call.ToolName)},
 			},
+		}}
+	}
+
+	if _, repeated := llm.CanonicalToolInput(call.ToolInput); len(repeated) > 0 {
+		l.Logger.Warn("tool input repeats names", "name", call.ToolName, "repeated", repeated)
+		return toolCallExecution{content: llm.Content{
+			Type:      llm.ContentTypeToolResult,
+			ToolUseID: call.ID,
+			ToolError: true,
+			ToolResult: []llm.Content{{Type: llm.ContentTypeText, Text: fmt.Sprintf(
+				"Malformed tool call: its input repeats %q, so it was not run. Call %s again, giving each parameter once.",
+				repeated, call.ToolName,
+			)}},
 		}}
 	}
 

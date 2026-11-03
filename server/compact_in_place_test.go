@@ -565,7 +565,7 @@ func TestBuildCompactionKeepsCallsWithOutputs(t *testing.T) {
 	col := func(from, to claudetool.IndexID, note string) claudetool.CompactCollapse {
 		return claudetool.CompactCollapse{From: from, To: to, Note: note}
 	}
-	_, err := buildCompaction(items, 20_000, claudetool.CompactInPlaceInput{Collapse: []claudetool.CompactCollapse{
+	_, err := buildCompaction(items, 20_000, piTokenCounter, claudetool.CompactInPlaceInput{Collapse: []claudetool.CompactCollapse{
 		col("3", "6", "n"), col("2", "3", "n"), col("4", "4", ""),
 	}})
 	want := "3 problems:\n" +
@@ -575,7 +575,7 @@ func TestBuildCompactionKeepsCallsWithOutputs(t *testing.T) {
 	if err == nil || err.Error() != want {
 		t.Fatalf("got %v", err)
 	}
-	c, err := buildCompaction(items, 20_000, claudetool.CompactInPlaceInput{Collapse: []claudetool.CompactCollapse{col("2", "2", "n"), col("4", "6", "n")}})
+	c, err := buildCompaction(items, 20_000, piTokenCounter, claudetool.CompactInPlaceInput{Collapse: []claudetool.CompactCollapse{col("2", "2", "n"), col("4", "6", "n")}})
 	if err != nil || len(c.Squishes) != 2 || c.Squishes[0].ToSequenceID != 3 || c.Squishes[1].FromSequenceID != 4 || c.Squishes[1].ToSequenceID != 6 {
 		t.Fatalf("%+v, %v", c, err)
 	}
@@ -595,7 +595,7 @@ func TestBuildCompactionOrphans(t *testing.T) {
 		textItem(7, llm.MessageRoleAssistant, "done"),
 		textItem(8, llm.MessageRoleAssistant, strings.Repeat("x", 4*25_000)),
 	}
-	index, err := compactIndex(items, 20_000)
+	index, err := compactIndex(items, 0, 20_000, piTokenCounter)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -605,7 +605,7 @@ func TestBuildCompactionOrphans(t *testing.T) {
 	col := func(from, to claudetool.IndexID) claudetool.CompactCollapse {
 		return claudetool.CompactCollapse{From: from, To: to, Note: "n"}
 	}
-	_, err = buildCompaction(items, 20_000, claudetool.CompactInPlaceInput{Collapse: []claudetool.CompactCollapse{col("2", "4"), col("6", "7")}})
+	_, err = buildCompaction(items, 20_000, piTokenCounter, claudetool.CompactInPlaceInput{Collapse: []claudetool.CompactCollapse{col("2", "4"), col("6", "7")}})
 	want := "2 problems:\n" +
 		"- collapse 2-4: 4 is a tool call without its output; end the range before it\n" +
 		"- collapse 6-7: 6 is a tool output without its call; start the range after it\n\n" + compactRetryGuidance
@@ -615,13 +615,13 @@ func TestBuildCompactionOrphans(t *testing.T) {
 	// Suggestions around a row that can only be collapsed on its own leave
 	// them out at the ends.
 	withUser := slices.Insert(slices.Clone(items), 4, textItem(10, llm.MessageRoleUser, "back"))
-	_, err = buildCompaction(withUser, 20_000, claudetool.CompactInPlaceInput{Collapse: []claudetool.CompactCollapse{col("2", "5")}})
+	_, err = buildCompaction(withUser, 20_000, piTokenCounter, claudetool.CompactInPlaceInput{Collapse: []claudetool.CompactCollapse{col("2", "5")}})
 	if want := "covers 10, which can only be collapsed on its own; collapse e.g. 2, 5 instead"; err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("want %q, got %v", want, err)
 	}
 	// Otherwise they go with the range.
 	for _, r := range []claudetool.CompactCollapse{col("2", "5"), col("4", "6"), col("5", "7")} {
-		c, err := buildCompaction(items, 20_000, claudetool.CompactInPlaceInput{Collapse: []claudetool.CompactCollapse{r}})
+		c, err := buildCompaction(items, 20_000, piTokenCounter, claudetool.CompactInPlaceInput{Collapse: []claudetool.CompactCollapse{r}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -635,7 +635,7 @@ func TestCompactIndexReadabilityGuidance(t *testing.T) {
 	index, err := compactIndex([]contextItem{
 		textItem(1, llm.MessageRoleAssistant, "Finished the benchmark."),
 		textItem(2, llm.MessageRoleAssistant, "Next task."),
-	}, 1)
+	}, 0, 1, piTokenCounter)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -664,7 +664,7 @@ func TestBuildCompactionRetryPreservesNotes(t *testing.T) {
 					{From: "missing", To: "1", Note: note},
 				},
 			}
-			_, err := buildCompaction(items, 1, in)
+			_, err := buildCompaction(items, 1, piTokenCounter, in)
 			if err == nil {
 				t.Fatal("invalid IDs accepted")
 			}
@@ -680,7 +680,7 @@ func TestBuildCompactionRetryPreservesNotes(t *testing.T) {
 			}
 			in.Trim = nil
 			in.Collapse[0].From = "1"
-			c, err := buildCompaction(items, 1, in)
+			c, err := buildCompaction(items, 1, piTokenCounter, in)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -726,7 +726,7 @@ func recentID(t *testing.T, history []contextItem, keepRecentTokens int) string 
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := recentStart(view, keepRecentTokens)
+	r := recentStart(view, keepRecentTokens, piTokenCounter)
 	if r >= len(view) {
 		t.Fatalf("recent start %d of %d rows", r, len(view))
 	}
@@ -797,7 +797,7 @@ func TestIndexSkipsEvidenceOfEarlierAttempts(t *testing.T) {
 		textItem(8, llm.MessageRoleAssistant, strings.Repeat("x", 4*15_000)),
 		textItem(9, llm.MessageRoleUser, "and on"),
 	}
-	index, err := compactIndex(history, 1)
+	index, err := compactIndex(history, 0, 1, piTokenCounter)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -842,7 +842,7 @@ func TestCompactIndexRows(t *testing.T) {
 		textItem(6, llm.MessageRoleAssistant, "done"),
 		textItem(7, llm.MessageRoleUser, strings.Repeat("x", 4*15_000)),
 	}
-	index, err := compactIndex(history, 1)
+	index, err := compactIndex(history, 0, 1, piTokenCounter)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -867,7 +867,7 @@ func TestBuildCompactionTrimsOnlyOlderOutputs(t *testing.T) {
 	}
 	// The recent part is the last call and its output.
 	// Rows are trimmed by id: the call's.
-	c, err := buildCompaction(history, 1, claudetool.CompactInPlaceInput{Trim: []claudetool.IndexID{"2"}})
+	c, err := buildCompaction(history, 1, piTokenCounter, claudetool.CompactInPlaceInput{Trim: []claudetool.IndexID{"2"}})
 	if err != nil || len(c.Trims) != 1 || c.Trims[0] != (db.CompactionTrim{SequenceID: 3, ToolUseID: "a"}) {
 		t.Fatalf("trim 2: %+v, %v", c, err)
 	}
@@ -877,7 +877,7 @@ func TestBuildCompactionTrimsOnlyOlderOutputs(t *testing.T) {
 		"1": "has no tool output",
 		"3": "unknown id",
 	} {
-		_, err = buildCompaction(history, 1, claudetool.CompactInPlaceInput{Trim: []claudetool.IndexID{id}})
+		_, err = buildCompaction(history, 1, piTokenCounter, claudetool.CompactInPlaceInput{Trim: []claudetool.IndexID{id}})
 		if want := fmt.Sprintf("trim %s: %s", id, want); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("want %q, got %v", want, err)
 		}
@@ -899,28 +899,29 @@ func TestBuildCompaction(t *testing.T) {
 		textItem(10, llm.MessageRoleAssistant, big+big),
 	}
 	// The recent part is the last message.
-	if r := recentStart(items, 20_000); r != 9 {
+	if r := recentStart(items, 20_000, piTokenCounter); r != 9 {
 		t.Fatalf("recent start = %d", r)
 	}
 	col := func(from, to claudetool.IndexID) claudetool.CompactCollapse {
 		return claudetool.CompactCollapse{From: from, To: to, Note: "n"}
 	}
 	for want, in := range map[string]claudetool.CompactInPlaceInput{
-		"nothing to compact": {},
-		"recent part":        {Collapse: []claudetool.CompactCollapse{col("9", "10")}},
-		"at most":            {Collapse: []claudetool.CompactCollapse{col("2", "4")}},
-		"overlaps":           {Collapse: []claudetool.CompactCollapse{col("8", "9"), col("9", "9")}},
-		"note is empty":      {Collapse: []claudetool.CompactCollapse{{From: "8", To: "9"}}},
+		"nothing to compact":    {},
+		"skip compacts nothing": {Action: "skip", Trim: []claudetool.IndexID{"8"}},
+		"recent part":           {Collapse: []claudetool.CompactCollapse{col("9", "10")}},
+		"at most":               {Collapse: []claudetool.CompactCollapse{col("2", "4")}},
+		"overlaps":              {Collapse: []claudetool.CompactCollapse{col("8", "9"), col("9", "9")}},
+		"note is empty":         {Collapse: []claudetool.CompactCollapse{{From: "8", To: "9"}}},
 		// The user's messages may only be collapsed on their own.
 		"collapse 5-8: covers 6, which can only be collapsed on its own; collapse e.g. 5, 8 instead":             {Collapse: []claudetool.CompactCollapse{col("5", "8")}},
 		"collapse 6-7: covers 6, which can only be collapsed on its own; collapse each of those rows on its own": {Collapse: []claudetool.CompactCollapse{col("6", "7")}},
 	} {
-		if _, err := buildCompaction(items, 20_000, in); err == nil || !strings.Contains(err.Error(), want) {
+		if _, err := buildCompaction(items, 20_000, piTokenCounter, in); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("want error %q, got %v", want, err)
 		}
 	}
 	// Every problem is reported at once, and nothing is compacted.
-	_, err := buildCompaction(items, 20_000, claudetool.CompactInPlaceInput{
+	_, err := buildCompaction(items, 20_000, piTokenCounter, claudetool.CompactInPlaceInput{
 		Trim:     []claudetool.IndexID{"nope"},
 		Collapse: []claudetool.CompactCollapse{col("99", "2"), col("2", "4")},
 	})
@@ -933,7 +934,7 @@ func TestBuildCompaction(t *testing.T) {
 	}
 	// Over the limit is fine for one row, here a tool call and its output,
 	// and a user message may be collapsed on its own.
-	c, err := buildCompaction(items, 20_000, claudetool.CompactInPlaceInput{Collapse: []claudetool.CompactCollapse{col("8", "9"), col("2", "2"), col("6", "6"), col("1", "1")}})
+	c, err := buildCompaction(items, 20_000, piTokenCounter, claudetool.CompactInPlaceInput{Collapse: []claudetool.CompactCollapse{col("8", "9"), col("2", "2"), col("6", "6"), col("1", "1")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1253,5 +1254,57 @@ func TestCompactRequestEndpoint(t *testing.T) {
 	c.seqWith(`Compact your context in place.\n\nkeep the plan`)
 	if !hasTool(c.agentRequest(), claudetool.CompactInPlaceName) {
 		t.Fatal("compact_in_place not offered to the agent")
+	}
+}
+
+// TestCompactSkip: skip compacts nothing and keeps the system prompt, so the
+// cache survives; it drops the evidence of compacting, and with none there
+// is nothing to record.
+func TestCompactSkip(t *testing.T) {
+	t.Parallel()
+	c := newCompactTestConversation(t, db.ConversationOptions{ToolOverrides: map[string]string{claudetool.CompactInPlaceName: "on"}})
+	dir := t.TempDir()
+	if err := c.database.UpdateConversationCwd(t.Context(), c.id, dir); err != nil {
+		t.Fatal(err)
+	}
+	c.turn("hello")
+	c.turn("bash: echo FIRST_OUTPUT")
+	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("FRESH_GUIDANCE"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rows := func(typ db.MessageType) int {
+		n := 0
+		for _, m := range listMessages(t, c.database, c.id) {
+			if m.Type == string(typ) {
+				n++
+			}
+		}
+		return n
+	}
+	skip := func() string {
+		t.Helper()
+		c.turn(`compact_in_place: {"action":"skip"}`)
+		out, isErr := c.lastToolOutput()
+		if isErr {
+			t.Fatalf("skip: %s", out)
+		}
+		return out
+	}
+
+	if out := skip(); rows(db.MessageTypeInPlaceCompaction) != 0 || !strings.Contains(out, "Nothing to skip") {
+		t.Fatalf("skip with nothing to drop recorded a compaction: %q", out)
+	}
+	c.turn(`compact_in_place: {"action":"index"}`)
+	skip()
+	if n := rows(db.MessageTypeInPlaceCompaction); n != 1 {
+		t.Fatalf("compactions = %d, want 1", n)
+	}
+	c.turn("echo: AFTER")
+	req := requestDump(c.ps.GetLastRequest())
+	if strings.Contains(req, `"ToolInput":{"action":"index"}`) || strings.Contains(req, "## Index") {
+		t.Fatalf("skip kept the earlier compact_in_place call:\n%s", req)
+	}
+	if rows(db.MessageTypeSystem) != 1 || strings.Contains(c.ps.GetLastRequest().System[0].Text, "FRESH_GUIDANCE") {
+		t.Fatal("skip refreshed the system prompt")
 	}
 }

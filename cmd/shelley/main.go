@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"shelley.exe.dev/claudetool"
 	"shelley.exe.dev/client"
 	"shelley.exe.dev/db"
+	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm/llmhttp"
 	"shelley.exe.dev/modelproviders"
 	"shelley.exe.dev/models"
@@ -30,6 +32,7 @@ import (
 
 type GlobalConfig struct {
 	DBPath                string
+	DBPathSet             bool // -db was given explicitly
 	Debug                 bool
 	PredictableOnly       bool
 	ConfigPath            string
@@ -54,9 +57,17 @@ func registerGlobalFlags(fs *flag.FlagSet, global *GlobalConfig) {
 	fs.BoolVar(&global.Debug, "debug", false, "Enable debug logging")
 	fs.BoolVar(&global.PredictableOnly, "predictable-only", false, "Use only the predictable service, ignoring all other models")
 	fs.StringVar(&global.ConfigPath, "config", "", "Path to shelley.json configuration file (optional)")
-	fs.StringVar(&global.DefaultModel, "default-model", "", "Default model for web UI (overrides shelley.json default_model; falls back to the first ready model when unset)")
+	fs.StringVar(&global.DefaultModel, "default-model", "", "Default model for web UI (overrides shelley.json default_model; prefers the first ready tier-1 model when unset)")
 	fs.BoolVar(&global.DisableLLMIntegration, "disable-llm-integration", false, "Ignore any discovered exe.dev llm integration")
 	fs.BoolVar(&global.DisableGateway, "disable-gateway", false, "Ignore llm_gateway from shelley.json")
+}
+
+// flagWasSet reports whether name was given on the command line, as opposed
+// to holding its default.
+func flagWasSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) { set = set || f.Name == name })
+	return set
 }
 
 func main() {
@@ -76,7 +87,6 @@ func main() {
 		fmt.Fprintf(flag.CommandLine.Output(), "  mcp <command>                 Use MCP servers (list, call, add, rm, auth, restart)\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  skill <cat|ls|new> [name]     Read, list, or create skills\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  dtach <new|attach> ...        Legacy persistent PTY session helper\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  tour <chunks|verify|attach|show> ...  Commit guided tours (git notes)\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  highlights <scaffold|verify|attach|show> ...  Commit file order and line highlights (git notes)\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  exe-scroll [args]              Run the embedded exe-scroll binary\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  unpack-template <name> <dir>  Unpack a project template to a directory\n")
@@ -86,6 +96,7 @@ func main() {
 
 	// Parse all flags first
 	flag.Parse()
+	global.DBPathSet = flagWasSet(flag.CommandLine, "db")
 	args := flag.Args()
 
 	if len(args) == 0 {
@@ -107,8 +118,6 @@ func main() {
 		runSkill(args[1:])
 	case "dtach":
 		runDtach(args[1:])
-	case "tour":
-		runTour(args[1:])
 	case "highlights":
 		runHighlights(args[1:])
 	case "exe-scroll":
@@ -712,16 +721,18 @@ func modelsCommandDefaultID(configured string, modelList []models.Built, predict
 	return ""
 }
 
-// runModels prints the materialized list of built-in models the server
-// would expose, without starting the server. Useful for confirming that
+// runModels prints the materialized list of models the server would expose,
+// without starting the server. Useful for confirming that
 // integrations/gateway/env-var precedence and discovery are configured
-// correctly. Does NOT include custom (DB-backed) models.
+// correctly. Custom (DB-backed) models are included only when -db is given
+// explicitly; otherwise no database is opened.
 func runModels(global GlobalConfig, args []string) {
 	fs := flag.NewFlagSet("models", flag.ExitOnError)
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "Usage: shelley [global-flags] models\n\n")
 		fmt.Fprintf(fs.Output(), "Prints the built-in models Shelley would expose with the current\n")
 		fmt.Fprintf(fs.Output(), "configuration (--config, env vars), without starting the server.\n")
+		fmt.Fprintf(fs.Output(), "With -db, also lists the custom models stored in that database.\n")
 	}
 	fs.Parse(args)
 	if fs.NArg() > 0 {
@@ -738,26 +749,47 @@ func runModels(global GlobalConfig, args []string) {
 
 	defaultID := modelsCommandDefaultID(llmCfg.DefaultModel, llmCfg.Models, global.PredictableOnly)
 
+	var custom []generated.Model
+	if global.DBPathSet {
+		database := setupDatabase(global.DBPath, logger)
+		defer database.Close()
+		custom, err = database.GetModels(context.Background())
+		if err != nil {
+			logger.Error("Failed to read custom models", "path", global.DBPath, "error", err)
+			os.Exit(1)
+		}
+	}
+
+	printModels(os.Stdout, llmCfg.Models, defaultID, custom)
+	if len(llmCfg.TranscriptionModels) == 0 {
+		return
+	}
+	fmt.Println()
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "TRANSCRIPTION MODEL\tENDPOINT\tSOURCE")
+	for _, m := range llmCfg.TranscriptionModels {
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", m.Model, m.Endpoint, m.Source)
+	}
+	tw.Flush()
+}
+
+// printModels writes the models table and count: built-in models first, then
+// DB custom models. API keys are never printed.
+func printModels(w io.Writer, built []models.Built, defaultID string, custom []generated.Model) {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "ID\tPROVIDER\tAPI TYPE\tBASE URL\tSOURCE\tDEFAULT")
-	for _, m := range llmCfg.Models {
+	for _, m := range built {
 		mark := ""
 		if m.ID == defaultID {
 			mark = "*"
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", m.ID, m.Provider, m.APIType, m.BaseURL, m.Source, mark)
 	}
-	tw.Flush()
-	fmt.Printf("\n%d models\n", len(llmCfg.Models))
-	if len(llmCfg.TranscriptionModels) == 0 {
-		return
-	}
-	fmt.Println()
-	fmt.Fprintln(tw, "TRANSCRIPTION MODEL\tENDPOINT\tSOURCE")
-	for _, m := range llmCfg.TranscriptionModels {
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", m.Model, m.Endpoint, m.Source)
+	for _, m := range custom {
+		fmt.Fprintf(tw, "%s\t%s\t\t%s\t%s\t\n", m.ModelID, m.ProviderType, m.Endpoint, models.SourceCustomLabel)
 	}
 	tw.Flush()
+	fmt.Fprintf(w, "\n%d models\n", len(built)+len(custom))
 }
 
 // systemdListeners returns the listeners systemd passed by socket

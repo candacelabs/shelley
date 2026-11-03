@@ -29,7 +29,7 @@
        use the `:on-send` / `:on-queue` function props. -->
 <template>
   <div
-    :class="`message-input-container ${isDraggingOver ? 'drag-over' : ''} ${isShellMode ? 'shell-mode' : ''} ${showSlashMenu || showFileMenu || showSkillMenu ? 'slash-menu-open' : ''}`"
+    :class="`message-input-container ${isDraggingOver ? 'drag-over' : ''} ${isShellMode ? 'shell-mode' : ''} ${showSlashMenu || showProfileMenu || showFileMenu || showSkillMenu ? 'slash-menu-open' : ''}`"
     @dragover="handleDragOver"
     @dragenter="handleDragEnter"
     @dragleave="handleDragLeave"
@@ -97,11 +97,12 @@
           class="skill-chip"
           data-testid="skill-chip"
         >
-          <span class="skill-chip-label truncate" :title="skill.description">{{ skill.name }}</span>
+          <span class="skill-chip-label truncate" :title="skill.description">{{ skill.mcp_tool || skill.name }}</span>
+          <span v-if="skill.mcp_server" class="skill-mcp-badge">{{ skill.mcp_server }}</span>
           <button
             type="button"
             class="skill-chip-x"
-            :aria-label="`Remove skill ${skill.name}`"
+            :aria-label="skill.mcp_server ? `Remove tool ${skill.mcp_tool} from ${skill.mcp_server}` : `Remove skill ${skill.name}`"
             @click="removeSelectedSkill(skill.name)"
           >
             <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
@@ -154,100 +155,99 @@
         </div>
       </div>
       <div class="textarea-wrapper">
-        <Teleport to="body" :disabled="!mobileSkillPicker">
-          <div
-            v-if="showSkillMenu && mobileSkillPicker"
-            class="skill-picker-backdrop"
-            @click="dismissSkills()"
-          ></div>
-          <div
-            v-if="showSkillMenu"
-            ref="skillMenuRef"
-            class="slash-command-menu skill-picker"
-            :class="{ 'skill-picker-mobile': mobileSkillPicker }"
-            :style="mobileSkillPicker ? {
-              top: `${skillViewport.top + 12}px`,
-              height: `${skillViewport.height - 12}px`,
-            } : undefined"
-            :role="mobileSkillPicker ? 'dialog' : undefined"
-            :aria-modal="mobileSkillPicker ? true : undefined"
-            :aria-label="mobileSkillPicker ? 'Choose a skill' : undefined"
-            data-testid="skill-picker"
-          >
-            <div class="skill-picker-head">
-              <b class="font-medium">Skills</b>
-              <button
-                v-if="mobileSkillPicker"
-                type="button"
-                class="skill-picker-close"
-                aria-label="Close skills"
-                @click="closeSkillPicker"
-              >
-                <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
-              </button>
-              <span v-else>↑↓ choose · Enter add · Esc close</span>
-            </div>
-            <input
+        <div
+          v-if="showSkillMenu"
+          ref="skillMenuRef"
+          class="slash-command-menu skill-picker"
+          :class="{ 'skill-picker-mobile': mobileSkillPicker }"
+          :style="
+            mobileSkillPicker
+              ? { height: `${mobileSkillPickerHeight}px`, maxHeight: 'none' }
+              : undefined
+          "
+          data-testid="skill-picker"
+          @mousedown="mobileSkillPicker && $event.preventDefault()"
+        >
+          <div class="skill-picker-head">
+            <b class="font-medium">Skills</b>
+            <button
               v-if="mobileSkillPicker"
-              :value="skillSearchQuery"
-              class="skill-picker-search"
-              type="search"
-              placeholder="Find a skill"
-              aria-label="Find a skill"
-              autocomplete="off"
-              @input="setSkillSearch"
-              @keydown.enter.prevent="chooseSkill(skillSelected)"
-              @keydown.esc="closeSkillPicker"
-            />
-            <div v-if="skillLoading || skillError" class="file-completion-status" role="status">
-              {{ skillError || "Loading skills…" }}
+              type="button"
+              class="skill-picker-close"
+              aria-label="Close skills"
+              @mousedown.prevent
+              @click="closeSkillPicker"
+            >
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+            </button>
+            <span v-else>↑↓ choose · Enter add · Esc close</span>
+          </div>
+          <div v-if="skillWarning" class="skill-picker-warning" role="status">{{ skillWarning }}</div>
+          <div v-if="skillLoading || skillError" class="file-completion-status" role="status">
+            {{ skillError || "Loading skills…" }}
+          </div>
+          <div
+            v-else-if="!skillMatches.length"
+            class="file-completion-status"
+            role="status"
+          >
+            No matching skills
+          </div>
+          <div v-else class="skill-picker-split">
+            <div :id="skillMenuId" role="listbox" aria-label="Skills" class="skill-picker-names">
+              <button
+                v-for="(item, index) in skillMatches"
+                :id="`${skillMenuId}-${index}`"
+                :key="item.name"
+                type="button"
+                tabindex="-1"
+                :class="['slash-command-item', { selected: index === skillSelected }]"
+                role="option"
+                :aria-selected="index === skillSelected"
+                :aria-label="`${item.name}: ${item.description}`"
+                @mousedown.prevent
+                @mouseenter="skillSelected = index"
+                @click="chooseSkill(index)"
+              >
+                <span class="slash-command-name skill-picker-label">
+                  <span class="truncate">{{ item.mcp_tool || item.name }}</span>
+                  <span v-if="item.mcp_server" class="skill-mcp-badge">{{ item.mcp_server }}</span>
+                </span>
+                <span v-if="mobileSkillPicker" class="skill-picker-description">{{ item.description }}</span>
+                <span v-if="mobileSkillPicker" class="skill-picker-add" aria-hidden="true">
+                  <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" d="M12 5v14M5 12h14" /></svg>
+                </span>
+              </button>
             </div>
             <div
-              v-else-if="!skillMatches.length"
-              class="file-completion-status"
-              role="status"
-            >
-              No matching skills
-            </div>
-            <div v-else class="skill-picker-split">
-              <div :id="skillMenuId" role="listbox" aria-label="Skills" class="skill-picker-names">
-                <button
-                  v-for="(item, index) in skillMatches"
-                  :id="`${skillMenuId}-${index}`"
-                  :key="item.name"
-                  type="button"
-                  tabindex="-1"
-                  :class="['slash-command-item', { selected: index === skillSelected }]"
-                  role="option"
-                  :aria-selected="index === skillSelected"
-                  :aria-label="`${item.name}: ${item.description}`"
-                  @mousedown.prevent
-                  @mouseenter="skillSelected = index"
-                  @click="chooseSkill(index)"
-                >
-                  <span class="slash-command-name">{{ item.name }}</span>
-                  <span v-if="mobileSkillPicker" class="skill-picker-description">{{ item.description }}</span>
-                  <span v-if="mobileSkillPicker" class="skill-picker-add" aria-hidden="true">
-                    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" d="M12 5v14M5 12h14" /></svg>
-                  </span>
-                </button>
-              </div>
-              <div
-                v-if="!mobileSkillPicker && skillMatches[skillSelected]"
-                class="skill-picker-detail" aria-hidden="true">
-                <div class="skill-picker-detail-name">{{ skillMatches[skillSelected].name }}</div>
-                <p>{{ skillMatches[skillSelected].description }}</p>
-                <div class="skill-picker-source">
-                  {{
-                    [skillMatches[skillSelected].origin, skillMatches[skillSelected].source_path]
-                      .filter(Boolean)
-                      .join(" · ")
-                  }}
-                </div>
+              v-if="!mobileSkillPicker && skillMatches[skillSelected]"
+              class="skill-picker-detail" aria-hidden="true">
+              <div class="skill-picker-detail-name">{{ skillMatches[skillSelected].mcp_tool || skillMatches[skillSelected].name }}</div>
+              <p>{{ skillMatches[skillSelected].description }}</p>
+              <template v-if="skillMatches[skillSelected].mcp_server">
+                <dl v-if="Object.keys(skillMatches[skillSelected].parameters?.properties || {}).length" class="skill-mcp-parameters">
+                  <template v-for="(parameter, name) in skillMatches[skillSelected].parameters?.properties" :key="name">
+                    <dt>
+                      <code>{{ name }}</code>
+                      <span class="text-secondary">{{ Array.isArray(parameter.type) ? parameter.type.join(" | ") : parameter.type }}</span>
+                      <span v-if="skillMatches[skillSelected].parameters?.required?.includes(String(name))" class="text-secondary">required</span>
+                    </dt>
+                    <dd v-if="parameter.description" class="text-secondary">{{ parameter.description }}</dd>
+                  </template>
+                </dl>
+                <div class="skill-picker-source">Read tool schema before calling</div>
+                <code class="skill-mcp-activate">{{ skillMatches[skillSelected].activate }}</code>
+              </template>
+              <div class="skill-picker-source">
+                {{
+                  [skillMatches[skillSelected].origin, skillMatches[skillSelected].source_path]
+                    .filter(Boolean)
+                    .join(" · ")
+                }}
               </div>
             </div>
           </div>
-        </Teleport>
+        </div>
 
         <div
           v-if="showFileMenu"
@@ -329,6 +329,34 @@
           </div>
         </div>
         <div
+          v-if="showProfileMenu"
+          :id="profileMenuId"
+          ref="profileMenuRef"
+          class="slash-command-menu"
+          role="listbox"
+          aria-label="Profiles"
+          data-testid="profile-menu"
+        >
+          <button
+            v-for="(profile, index) in profileSuggestions"
+            :key="profile.name"
+            :id="`${profileMenuId}-${index}`"
+            type="button"
+            :class="`slash-command-item profile-menu-item${index === profileMenuSelectedIndex ? ' selected' : ''}`"
+            role="option"
+            :aria-selected="index === profileMenuSelectedIndex"
+            @mousedown.prevent
+            @mouseenter="profileMenuSelectedIndex = index"
+            @click="chooseProfile(index)"
+          >
+            <span class="profile-menu-topline">
+              <span class="slash-command-name">+{{ profile.name }}</span>
+              <span class="profile-menu-meta">{{ profileMeta(profile) }}</span>
+            </span>
+            <span class="slash-command-description">{{ profileDescription(profile) }}</span>
+          </button>
+        </div>
+        <div
           v-if="showSlashMenu"
           ref="slashMenuRef"
           class="slash-command-menu"
@@ -402,14 +430,18 @@
           :rows="initialRows ?? 1"
           aria-label="Message input"
           data-testid="message-input"
-          :aria-autocomplete="showSkillMenu || showFileMenu ? 'list' : undefined"
-          :aria-controls="showSkillMenu ? skillMenuId : showFileMenu ? fileMenuId : undefined"
+          :aria-autocomplete="showSkillMenu || showFileMenu || showProfileMenu ? 'list' : undefined"
+          :aria-controls="
+            showSkillMenu ? skillMenuId : showFileMenu ? fileMenuId : showProfileMenu ? profileMenuId : undefined
+          "
           :aria-activedescendant="
             showSkillMenu && skillMatches.length
               ? `${skillMenuId}-${skillSelected}`
               : showFileMenu && fileMatches.length
                 ? `${fileMenuId}-${fileSelected}`
-                : undefined
+                : showProfileMenu && profileSuggestions.length
+                  ? `${profileMenuId}-${profileMenuSelectedIndex}`
+                  : undefined
           "
           @input="onTextareaInput"
           @select="syncFileSelection"
@@ -459,12 +491,25 @@
               type="submit"
               :disabled="!canSubmit"
               class="send-split-main"
-              :aria-label="t('sendMessage')"
+              :aria-label="queueArmed ? 'Queue after agent finishes' : t('sendMessage')"
               data-testid="send-button"
+              @click="handleSendClick"
             >
               <div v-if="isDisabled || submitting" class="flex items-center justify-center">
                 <div class="spinner spinner-small message-send-spinner-white"></div>
               </div>
+              <svg
+                v-else-if="queueArmed"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                width="18"
+                height="18"
+              >
+                <circle cx="12" cy="12" r="10" />
+                <polyline points="12 6 12 12 16 14" />
+              </svg>
               <svg v-else fill="currentColor" viewBox="0 0 24 24" width="18" height="18">
                 <path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z" />
               </svg>
@@ -502,6 +547,7 @@
                   <polyline points="12 6 12 12 16 14" />
                 </svg>
                 Queue after agent finishes
+                <span class="overflow-menu-shortcut"><kbd>{{ queueShortcut }}</kbd></span>
               </button>
             </div>
           </div>
@@ -533,6 +579,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, shallowReactive, shall
 import { useFileCompletion } from "../composables/fileCompletion";
 import { useSkillCompletion } from "../composables/skillCompletion";
 import type { SkillDescriptor } from "../../services/api";
+import type { Profile } from "../../types";
 import { useI18n } from "../composables/i18n";
 import { pickPlaceholderHint } from "../../utils/placeholderHints";
 import HighlightedText from "./HighlightedText.vue";
@@ -544,6 +591,7 @@ import RecordButton from "./RecordButton.vue";
 import RecordingPanel from "./RecordingPanel.vue";
 import type { RecordingDestination, RecordingMode, RecordingPreparation } from "./recordingDestination";
 import { focusMessageInputIfUnfocused } from "../../utils/focusMessageInput";
+import { prettyModelName } from "../../utils/modelNames";
 import {
   CONCRETE_THINKING_LEVELS,
   supportedThinkingLevels,
@@ -601,10 +649,14 @@ const props = withDefaults(
     lazyDraftId?: string | null;
     /** Ready models (id + reasoning capabilities), used to autocomplete the
      * /model command arguments with only the levels the target model accepts. */
-    modelOptions?: ({ id: string } & ReasoningModelCapabilities)[];
+    modelOptions?: ({ id: string; default_reasoning_level?: string } & ReasoningModelCapabilities)[];
     /** Currently selected model id; the levels offered for "/model <level>"
      * (no model argument) are the ones this model accepts. */
     currentModelId?: string;
+    /** Concrete server default used by profiles that do not name a model. */
+    defaultModelId?: string;
+    /** Profiles offered when the message starts with +. */
+    profiles?: Profile[];
     /** Working directory for server-side @ filename completion. */
     cwd?: string;
     /** Child conversations cannot start nested BTW readers. */
@@ -619,6 +671,7 @@ const props = withDefaults(
     autoFocus: false,
     initialRows: 1,
     isChildConversation: false,
+    profiles: () => [],
   },
 );
 
@@ -697,12 +750,11 @@ const readyAttachments = computed(() =>
 const dragCounter = ref(0);
 const isSmallScreen = ref(typeof window !== "undefined" ? window.innerWidth < 480 : false);
 const mobileSkillPicker = ref(window.innerWidth <= 767);
-const skillViewport = ref({
-  top: window.visualViewport?.offsetTop ?? 0,
-  height: window.visualViewport?.height ?? window.innerHeight,
-});
+const mobileSkillPickerHeight = ref(0);
 const showQueueMenu = ref(false);
 const slashMenuSelectedIndex = ref(0);
+const profileMenuSelectedIndex = ref(0);
+const profileMenuDismissed = ref(false);
 const slashMenuDismissed = ref(false);
 // Set once the user has moved the highlight in the /model argument menu (via
 // Arrow keys). When they then press Enter we complete the highlighted option
@@ -711,6 +763,7 @@ const modelArgMenuNavigated = ref(false);
 
 const queueMenuRef = ref<HTMLDivElement | null>(null);
 const slashMenuRef = ref<HTMLDivElement | null>(null);
+const profileMenuRef = ref<HTMLDivElement | null>(null);
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 const screenRecordingAvailable =
@@ -1087,8 +1140,32 @@ function isModEvent(e: KeyboardEvent) {
   return e.metaKey || e.ctrlKey;
 }
 
+const altHeld = ref(false);
+const queueShortcut = /Mac|iPhone|iPad|iPod/i.test(navigator.platform) ? "\u2325\u21a9" : "Alt+Enter";
+const canQueueNow = computed(() => props.canQueue && hasQueueHandler.value);
+const queueArmed = computed(() => altHeld.value && canQueueNow.value);
+
+function isAltEvent(e: KeyboardEvent | MouseEvent) {
+  return e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey;
+}
+
+function trackAlt(e: KeyboardEvent) {
+  altHeld.value = isAltEvent(e);
+}
+
+function clearAlt() {
+  altHeld.value = false;
+}
+
+function handleSendClick(e: MouseEvent) {
+  if (!isAltEvent(e) || !canQueueNow.value) return;
+  e.preventDefault();
+  void handleQueueMessage();
+}
+
 // --- @ filename autocomplete --------------------------------------------
 const fileMenuId = useId();
+const profileMenuId = useId();
 const fileMenuRef = ref<HTMLDivElement | null>(null);
 // useFileCompletion keys its results on the session and reacts synchronously,
 // so it must not observe the session mid-update. conversationId and
@@ -1113,6 +1190,7 @@ const {
   selected: skillSelected,
   loading: skillLoading,
   error: skillError,
+  warning: skillWarning,
   focused: skillFocused,
   updateSelection: updateSkillSelection,
   dismiss: dismissSkills,
@@ -1178,32 +1256,30 @@ function onSkillMenuOutside(e: MouseEvent) {
   if (skillMenuRef.value?.contains(e.target as Node) || e.target === textareaRef.value) return;
   dismissSkills();
 }
-const skillSearchQuery = computed(() =>
-  message.value.split("\n", 1)[0].replace(/^\/skills[ \t]*/, ""),
-);
-function setSkillSearch(e: Event) {
-  const query = (e.target as HTMLInputElement).value;
-  const newline = message.value.indexOf("\n");
-  const rest = newline < 0 ? "" : message.value.slice(newline);
-  const command = `/skills ${query}`;
-  setMessage(command + rest);
-  updateSkillSelection(command.length, command.length);
-}
 function closeSkillPicker() {
   dismissSkills();
   textareaRef.value?.focus({ preventScroll: true });
 }
 function onTextareaBlur(e: FocusEvent) {
   fileFocused.value = false;
-  if (mobileSkillPicker.value && showSkillMenu.value) return;
   if (!skillMenuRef.value?.contains(e.relatedTarget as Node)) skillFocused.value = false;
 }
+function sizeMobileSkillPicker() {
+  if (!mobileSkillPicker.value || !skillMenuRef.value) return;
+  const bottom = skillMenuRef.value.getBoundingClientRect().bottom;
+  mobileSkillPickerHeight.value = Math.max(0, bottom - (window.visualViewport?.offsetTop ?? 0) - 12);
+}
+const skillPickerResizeObserver = new ResizeObserver(sizeMobileSkillPicker);
 watch(showSkillMenu, async (open) => {
+  skillPickerResizeObserver.disconnect();
   if (open) document.addEventListener("mousedown", onSkillMenuOutside);
   else document.removeEventListener("mousedown", onSkillMenuOutside);
-  if (open && mobileSkillPicker.value) {
+  if (open) {
     await nextTick();
-    if (showSkillMenu.value && mobileSkillPicker.value) textareaRef.value?.blur();
+    if (!showSkillMenu.value) return;
+    skillPickerResizeObserver.observe(textareaRef.value!.closest(".message-input-container")!);
+    skillPickerResizeObserver.observe(document.documentElement);
+    sizeMobileSkillPicker();
   }
 });
 watch(skillSelected, async () => {
@@ -1283,6 +1359,64 @@ const showSlashMenu = computed(
     !isDisabled.value &&
     !isShellMode.value,
 );
+
+const profileQuery = computed(() => {
+  const match = message.value.match(/^\+([^\s]*)$/);
+  return match ? match[1].toLowerCase() : null;
+});
+const profileSuggestions = computed(() => {
+  if (profileQuery.value === null) return [];
+  return props.profiles.filter((profile) =>
+    profile.name.toLowerCase().startsWith(profileQuery.value!),
+  );
+});
+const showProfileMenu = computed(
+  () =>
+    profileQuery.value !== null &&
+    !profileMenuDismissed.value &&
+    profileSuggestions.value.length > 0 &&
+    !isDisabled.value &&
+    !isShellMode.value,
+);
+
+watch(profileQuery, () => {
+  profileMenuSelectedIndex.value = 0;
+  profileMenuDismissed.value = false;
+});
+
+async function chooseProfile(index: number) {
+  const profile = profileSuggestions.value[index];
+  if (!profile) return;
+  setMessage(`+${profile.name} `);
+  await nextTick();
+  textareaRef.value?.focus();
+  textareaRef.value?.setSelectionRange(message.value.length, message.value.length);
+}
+
+function profileDescription(profile: Profile): string {
+  return profile.system_prompt.trim().split(/\r?\n/, 1)[0] || "Built-in system prompt";
+}
+
+function profileMeta(profile: Profile): string {
+  const model = profile.model || props.defaultModelId || "";
+  const info = (props.modelOptions ?? []).find((option) => option.id === model);
+  const reasoning = profile.thinking_level || info?.default_reasoning_level || "";
+  return [prettyModelName(model), reasoning].filter(Boolean).join(" · ");
+}
+
+function onProfileMenuOutside(e: MouseEvent) {
+  if (profileMenuRef.value?.contains(e.target as Node) || e.target === textareaRef.value) return;
+  profileMenuDismissed.value = true;
+}
+
+watch(showProfileMenu, (open) => {
+  if (open) document.addEventListener("mousedown", onProfileMenuOutside);
+  else document.removeEventListener("mousedown", onProfileMenuOutside);
+});
+watch(profileMenuSelectedIndex, async () => {
+  await nextTick();
+  profileMenuRef.value?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
+});
 
 // --- /model argument autocomplete ---------------------------------------
 // As soon as "/model" has been typed (with or without a trailing space), offer
@@ -1491,6 +1625,7 @@ async function handleSubmit(e: Event) {
 }
 
 async function handleQueueMessage() {
+  if (!canSubmit.value) return;
   if (interceptSkillSubmission()) return;
   const dispatch = composerDispatch(message.value, { intent: "queue" });
   if (openTerminalIfRequested(dispatch)) return;
@@ -1633,6 +1768,28 @@ function handleKeyDown(e: KeyboardEvent) {
       return;
     }
   }
+  if (showProfileMenu.value) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      profileMenuDismissed.value = true;
+      return;
+    }
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      profileMenuSelectedIndex.value =
+        (profileMenuSelectedIndex.value +
+          (e.key === "ArrowDown" ? 1 : -1) +
+          profileSuggestions.value.length) %
+        profileSuggestions.value.length;
+      return;
+    }
+    if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault();
+      void chooseProfile(profileMenuSelectedIndex.value);
+      return;
+    }
+  }
   if (showSlashMenu.value) {
     if (e.key === "ArrowDown") {
       e.preventDefault();
@@ -1701,6 +1858,20 @@ function handleKeyDown(e: KeyboardEvent) {
     textareaRef.value?.blur();
     return;
   }
+  if (e.key === "Enter" && e.altKey && e.shiftKey && !isModEvent(e)) {
+    e.preventDefault();
+    const textarea = textareaRef.value!;
+    textarea.setRangeText("\n", textarea.selectionStart, textarea.selectionEnd, "end");
+    setMessage(textarea.value);
+    syncFileSelection();
+    return;
+  }
+  if (e.key === "Enter" && isAltEvent(e)) {
+    e.preventDefault();
+    if (canQueueNow.value) void handleQueueMessage();
+    else void handleSubmit(e);
+    return;
+  }
   if (e.key === "Enter" && !e.shiftKey) {
     // On mobile, let Enter create newlines since there's a send button.
     const isMobile = "ontouchstart" in window;
@@ -1725,10 +1896,7 @@ watch(
 
 // Handle virtual keyboard appearance on mobile via visualViewport.
 function handleViewportResize() {
-  skillViewport.value = {
-    top: window.visualViewport?.offsetTop ?? 0,
-    height: window.visualViewport?.height ?? window.innerHeight,
-  };
+  requestAnimationFrame(sizeMobileSkillPicker);
   if (document.activeElement === textareaRef.value) {
     requestAnimationFrame(() => {
       textareaRef.value?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -1737,24 +1905,36 @@ function handleViewportResize() {
 }
 
 onMounted(() => {
+  window.addEventListener("keydown", trackAlt);
+  window.addEventListener("keyup", trackAlt);
+  window.addEventListener("blur", clearAlt);
   window.addEventListener("resize", handleResize);
+  window.addEventListener("scroll", sizeMobileSkillPicker, true);
   if (typeof window !== "undefined" && window.visualViewport) {
     window.visualViewport.addEventListener("resize", handleViewportResize);
+    window.visualViewport.addEventListener("scroll", sizeMobileSkillPicker);
   }
 });
 
 onUnmounted(() => {
+  window.removeEventListener("keydown", trackAlt);
+  window.removeEventListener("keyup", trackAlt);
+  window.removeEventListener("blur", clearAlt);
   disposed = true;
   const sessions = new Set(attachmentSessions.values());
   if (recordingSubmission.value) sessions.add(recordingSubmission.value.attachmentSession);
   recordingSubmission.value?.preparation.release();
   recordingSubmission.value = null;
   window.removeEventListener("resize", handleResize);
+  window.removeEventListener("scroll", sizeMobileSkillPicker, true);
+  skillPickerResizeObserver.disconnect();
   if (typeof window !== "undefined" && window.visualViewport) {
     window.visualViewport.removeEventListener("resize", handleViewportResize);
+    window.visualViewport.removeEventListener("scroll", sizeMobileSkillPicker);
   }
   document.removeEventListener("mousedown", onQueueMenuOutside);
   document.removeEventListener("mousedown", onSlashMenuOutside);
+  document.removeEventListener("mousedown", onProfileMenuOutside);
   document.removeEventListener("mousedown", onFileMenuOutside);
   document.removeEventListener("mousedown", onSkillMenuOutside);
   for (const session of sessions) clearAttachments(session);

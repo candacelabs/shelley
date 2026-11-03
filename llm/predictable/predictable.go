@@ -70,6 +70,9 @@ func requestMentions(req *llm.Request, needle string) bool {
 //   - "echo: <text>" - echoes the text back
 //   - "bash: <command>" - triggers bash tool with command
 //   - "bash-bg: <command>" - triggers bash tool with background=true
+//   - "bash@<ssh_target>: <command>", "bash-bg@<ssh_target>: <command>" - the
+//     same, with an ssh_target (the VM's name, or localhost for this
+//     machine, for a conversation with a VM)
 //   - "think: <thoughts>" - returns response with extended thinking content
 //   - "subagent: <slug> <prompt>" - triggers subagent tool
 //   - "change_dir: <path>" - triggers change_dir tool
@@ -187,6 +190,9 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 	}
 
 	if id, ok := idleNudgeFirstRow(req); ok {
+		if strings.Contains(req.Messages[len(req.Messages)-1].Content[0].Text, "Keep everything.") {
+			return s.makeToolResponse("compact_in_place", json.RawMessage(`{"action":"skip"}`), inputTokens), nil
+		}
 		input, _ := json.Marshal(map[string]any{"action": "compact", "collapse": []map[string]string{{"from": id, "to": id, "note": "IDLE NOTE"}}})
 		return s.makeToolResponse("compact_in_place", input, inputTokens), nil
 	}
@@ -283,12 +289,15 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 			return s.makeResponse(text, inputTokens), nil
 		}
 
-		if cmd, ok := strings.CutPrefix(inputText, "bash: "); ok {
-			return s.makeBashToolResponse(cmd, false, inputTokens), nil
-		}
-
-		if cmd, ok := strings.CutPrefix(inputText, "bash-bg: "); ok {
-			return s.makeBashToolResponse(cmd, true, inputTokens), nil
+		if prefix, cmd, ok := strings.Cut(inputText, ": "); ok && strings.HasPrefix(prefix, "bash") {
+			name, target, hasTarget := strings.Cut(prefix, "@")
+			if name == "bash" || name == "bash-bg" {
+				var sshTarget *string
+				if hasTarget {
+					sshTarget = &target
+				}
+				return s.makeBashToolResponse(cmd, name == "bash-bg", sshTarget, inputTokens), nil
+			}
 		}
 
 		if thoughts, ok := strings.CutPrefix(inputText, "think: "); ok {
@@ -350,7 +359,7 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 				"printf %%s %q | base64 -d > %s && echo %s",
 				inlineImagePNGBase64, inlineImagePath, inlineImageSentinel,
 			)
-			return s.makeBashToolResponse(cmd, false, inputTokens), nil
+			return s.makeBashToolResponse(cmd, false, nil, inputTokens), nil
 		}
 
 		if inputText == "screenshot image" {
@@ -361,7 +370,7 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 				"mkdir -p %s && printf %%s %q | base64 -d > %s && echo %s",
 				screenshotImageDir, inlineImagePNGBase64, screenshotImagePath, screenshotImageSentinel,
 			)
-			return s.makeBashToolResponse(cmd, false, inputTokens), nil
+			return s.makeBashToolResponse(cmd, false, nil, inputTokens), nil
 		}
 
 		if text, ok := strings.CutPrefix(inputText, "message_parent_final: "); ok {
@@ -492,11 +501,14 @@ func (s *Service) makeResponse(text string, inputTokens uint64) *llm.Response {
 }
 
 // makeBashToolResponse creates a response that calls the bash tool
-func (s *Service) makeBashToolResponse(command string, background bool, inputTokens uint64) *llm.Response {
+func (s *Service) makeBashToolResponse(command string, background bool, sshTarget *string, inputTokens uint64) *llm.Response {
 	// Properly marshal the command to avoid JSON escaping issues
 	toolInputData := map[string]any{"command": command}
 	if background {
 		toolInputData["background"] = true
+	}
+	if sshTarget != nil {
+		toolInputData["ssh_target"] = *sshTarget
 	}
 	toolInputBytes, _ := json.Marshal(toolInputData)
 	toolInput := json.RawMessage(toolInputBytes)
@@ -1300,7 +1312,7 @@ var idleIndexRow = regexp.MustCompile("(?m)^id {2,}role.*\n(\\S+) ")
 
 // idleNudgeFirstRow returns the first row id of the compact_in_place index in
 // an idle compaction nudge ending req, which predictable answers by
-// collapsing that row.
+// collapsing that row, or skips when the nudge says "Keep everything.".
 func idleNudgeFirstRow(req *llm.Request) (string, bool) {
 	if len(req.Messages) == 0 {
 		return "", false

@@ -7,7 +7,7 @@ import type { Conversation, ConversationWithState } from "../../types";
 import type { TranslationKeys } from "../../i18n/types";
 import type { OfferedTag } from "../../utils/tagFilter";
 
-export type GroupBy = "none" | "daily" | "cwd" | "git_repo" | "tag" | "participants";
+export type GroupBy = "none" | "project" | "daily" | "cwd" | "git_repo" | "tag" | "participants";
 
 // Parses the JSON-encoded tags field on a Conversation. Tolerates the empty
 // string and malformed JSON (treated as no tags).
@@ -90,6 +90,9 @@ export interface DrawerCtx {
   toggleTagFilter: (tag: string) => void;
   formatDate: (timestamp: string) => string;
   formatCwdForDisplay: (p: string | null | undefined) => string | null;
+  // Where a conversation works: its directory, or VM:directory for one
+  // that works on a VM over ssh (its directory here is a scratch directory).
+  workingDirectory: (c: Conversation) => { text: string; title: string } | null;
   handleModifiedClick: (e: MouseEvent, conversation: Conversation) => boolean;
   handleAuxClick: (e: MouseEvent, conversation: Conversation) => void;
   selectConversation: (c: Conversation) => void;

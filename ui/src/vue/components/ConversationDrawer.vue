@@ -26,13 +26,14 @@
          (e: "toggle-collapse"): void               // onToggleCollapse
          (e: "select-conversation", c: Conversation): void   // onSelectConversation
          (e: "new-conversation"): void              // onNewConversation
-         (e: "archived", id: string, next?: Conversation | null): void  // onConversationArchived
+         (e: "removed", id: string, next?: Conversation | null): void  // archived or deleted
          (e: "unarchived", c: Conversation): void   // onConversationUnarchived
          (e: "renamed", c: Conversation): void      // onConversationRenamed -->
 <template>
   <div :class="`drawer ${isOpen ? 'open' : ''} ${isCollapsed ? 'collapsed' : ''}`">
     <!-- Header -->
     <div class="drawer-header">
+      <ExeBrand v-if="workspaceMode" />
       <h2 v-if="showArchived" class="app-bar-title drawer-title">{{ t("archived") }}</h2>
       <div class="drawer-header-actions">
         <!-- Search toggle button -->
@@ -53,8 +54,8 @@
             />
           </svg>
         </Button>
-        <!-- Group by button -->
-        <div v-if="!showArchived" ref="groupMenuRef" class="group-by-wrapper">
+        <!-- Group by button; workspace mode always groups by project -->
+        <div v-if="!workspaceMode && !showArchived" ref="groupMenuRef" class="group-by-wrapper">
           <Button
             :class="`btn-icon${groupBy !== 'none' ? ' group-by-active' : ''}`"
             text
@@ -110,9 +111,20 @@
             </button>
           </div>
         </div>
+        <Button
+          v-if="groupBy === 'project'"
+          class="btn-icon"
+          text
+          severity="secondary"
+          :aria-label="t('newProject')"
+          v-tooltip.top="t('newProject')"
+          @click="workspace.editProject()"
+        >
+          <i class="pi pi-folder-plus" aria-hidden="true" />
+        </Button>
         <!-- New conversation button -->
         <Button
-          v-if="!showArchived"
+          v-if="!showArchived && !workspaceMode"
           class="btn-icon"
           text
           severity="secondary"
@@ -165,6 +177,48 @@
         </Button>
       </div>
     </div>
+
+    <a
+      v-if="workspace.data.value?.assistant_id"
+      href="/"
+      class="workspace-assistant-row"
+      :class="{ active: workspace.isAssistant(currentConversationId) }"
+      :aria-current="workspace.isAssistant(currentConversationId) ? 'page' : undefined"
+      data-testid="assistant-row"
+      @click="selectAssistant"
+    >
+      <div class="drawer-conversation-item-flex-container">
+        <div class="drawer-conversation-header-row">
+          <div class="conversation-title drawer-conversation-item-flex-container">
+            <i class="pi pi-sparkles workspace-assistant-icon" aria-hidden="true" />Assistant
+          </div>
+          <span
+            v-if="assistantWorking"
+            class="working-indicator"
+            role="status"
+            aria-label="Assistant is working"
+          />
+        </div>
+        <div class="conversation-preview">Your permanent workspace companion</div>
+      </div>
+    </a>
+    <p v-if="rowError" class="error-line drawer-error" role="alert">
+      {{ rowError }}
+      <button type="button" class="text-button" @click="rowError = ''">{{ t("dismiss") }}</button>
+    </p>
+    <p v-if="customizations.error.value" class="error-line drawer-error" role="status">
+      Shelley build status unavailable. Reconnecting… {{ customizations.error.value }}
+    </p>
+    <p v-if="customizations.requestError.value" class="error-line drawer-error" role="alert">
+      {{ customizations.requestError.value }}
+      <button
+        type="button"
+        class="text-button"
+        @click="customizations.requestError.value = ''"
+      >
+        Dismiss
+      </button>
+    </p>
 
     <div
       v-if="groupBy === 'daily'"
@@ -464,6 +518,85 @@
           Show all conversations
         </Button>
       </div>
+      <div v-else-if="groupBy === 'project' && projectGroups" class="conversation-list project-list">
+        <section
+          v-for="group in projectGroups"
+          :key="group.id"
+          class="conversation-group project-group"
+          :aria-label="group.label"
+        >
+          <div
+            class="project-heading"
+            @contextmenu="group.project && projectMenus.get(group.id)?.open($event)"
+          >
+            <button
+              type="button"
+              class="project-toggle"
+              :aria-expanded="!projectGroupCollapsed(group)"
+              @click="toggleProjectGroup(group)"
+            >
+              <i
+                class="pi pi-chevron-down"
+                :class="{ 'project-chevron-collapsed': projectGroupCollapsed(group) }"
+                aria-hidden="true"
+              />
+              <span class="conversation-group-label" :title="group.label">{{ group.label }}</span>
+              <span class="conversation-group-count">{{ group.conversations.length }}</span>
+            </button>
+            <button
+              v-if="!showArchived"
+              type="button"
+              class="project-icon-button"
+              :aria-label="t('newConversationInProject').replace('{project}', group.label)"
+              :title="t('newConversationInProject').replace('{project}', group.label)"
+              @click="
+                group.project ? workspace.newProjectConversation(group.project.name) : emit('new-conversation')
+              "
+            >
+              <i class="pi pi-plus" aria-hidden="true" />
+            </button>
+            <NavActionsMenu
+              v-if="group.project"
+              :ref="(menu) => setProjectMenu(group.id, menu)"
+              :items="projectActions(group.project)"
+              :label="t('projectActions').replace('{project}', group.label)"
+              testid="project-actions-menu"
+            />
+          </div>
+          <ProjectVMSetup v-if="group.project" :vm="group.project.vm" />
+          <p
+            v-for="vm in vmCleanupIssues(group.project?.name)"
+            :key="vm.conversation_id"
+            class="error-line project-vm-cleanup"
+            role="alert"
+          >
+            <a :href="`c/${vm.conversation_id}`">{{ vm.vm_name }}</a
+            >: {{ vm.error }}
+          </p>
+          <template v-if="!projectGroupCollapsed(group)">
+            <template v-for="conv in group.conversations" :key="conv.conversation_id">
+              <ConversationRow :conversation="conv" />
+              <CustomizationStatus
+                v-if="customizationFor(conv.conversation_id)"
+                :state="customizationFor(conv.conversation_id)!"
+                :pending-conversation="customizations.pendingConversation.value"
+                :unavailable="!!customizations.error.value"
+                @restart="customizations.mutate(customizationFor(conv.conversation_id)!, 'restart')"
+                @verify="customizations.mutate(customizationFor(conv.conversation_id)!, 'verify')"
+                @cancel-auto-restart="
+                  customizations.mutate(
+                    customizationFor(conv.conversation_id)!,
+                    'cancelAutoRestart',
+                  )
+                "
+              />
+            </template>
+          </template>
+        </section>
+        <p v-if="!projectGroups.length" class="text-secondary drawer-empty-state">
+          {{ showArchived ? t("noArchivedConversations") : t("noSearchResults") }}
+        </p>
+      </div>
       <div
         v-else-if="selectedDay && displayedConversations.length === 0"
         class="text-secondary drawer-empty-state"
@@ -569,7 +702,7 @@
       ref="contextMenuRef"
       :model="contextMenuItems"
       :aria-label="t('actions')"
-      :pt="{ root: { class: 'drawer-actions-menu', 'data-testid': 'conversation-context-menu' } }"
+      :pt="navMenuPt('conversation-context-menu')"
       @hide="onContextMenuHide"
     />
   </div>
@@ -608,14 +741,24 @@ import {
   type ActiveStructuredQueryEdit,
 } from "../../utils/conversationQuery";
 import { handleModifiedNavClick } from "../utils/openInNewTab";
+import ExeBrand from "./ExeBrand.vue";
+import { COMPOSER_ROW_ID } from "../../utils/composerRow";
 import ConversationRow from "./ConversationDrawerRow.vue";
+import ProjectVMSetup from "./ProjectVMSetup.vue";
+import CustomizationStatus from "./CustomizationStatus.vue";
+import { useCustomizations } from "../composables/customizations";
 import ConversationQueryEditor from "./ConversationQueryEditor.vue";
 import Button from "primevue/button";
 import ContextMenu from "primevue/contextmenu";
 import type { MenuItem } from "primevue/menuitem";
+import NavActionsMenu from "./NavActionsMenu.vue";
+import { navMenuPt } from "./navMenu";
+import { useWorkspace } from "../composables/workspace";
+import { workspaceApi, type Project } from "../../services/workspace";
 import DatePicker from "primevue/datepicker";
 import Popover from "primevue/popover";
 import { DrawerCtxKey, type GroupBy, parseTags } from "./conversationDrawerShared";
+import { workspaceMode } from "../../utils/workspaceMode";
 import { workingConversationIds } from "../../utils/workingConversations";
 import type { EphemeralTerminal } from "./terminalTypes";
 import {
@@ -642,6 +785,7 @@ import {
 } from "../../utils/tagFilter";
 import type { OfferedTag } from "../../utils/tagFilter";
 import { perfCount } from "../../utils/perf";
+import { errorMessage } from "../../utils/errorMessage";
 
 const props = defineProps<{
   isOpen: boolean;
@@ -662,12 +806,64 @@ const emit = defineEmits<{
   (e: "toggle-collapse"): void;
   (e: "select-conversation", c: Conversation): void;
   (e: "new-conversation"): void;
-  (e: "archived", id: string, next?: Conversation | null): void;
+  (e: "removed", id: string, next?: Conversation | null): void;
   (e: "unarchived", c: Conversation): void;
   (e: "renamed", c: Conversation): void;
 }>();
 
 const { t } = useI18n();
+const workspace = useWorkspace();
+const customizations = useCustomizations();
+const customizationByConversation = computed(
+  () => new Map(customizations.entries.value.map((entry) => [entry.conversation_id, entry])),
+);
+const customizationFor = (id: string) => customizationByConversation.value.get(id);
+const rowError = ref("");
+const assistantWorking = computed(() =>
+  props.conversations.some(
+    (conversation) => workspace.isAssistant(conversation.conversation_id) && conversation.working,
+  ),
+);
+async function selectAssistant(event: MouseEvent) {
+  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  event.preventDefault();
+  try {
+    const id = workspace.data.value?.assistant_id;
+    if (!id) throw new Error("Assistant is unavailable");
+    const conversation =
+      props.conversations.find((item) => item.conversation_id === id) ??
+      (await api.getConversationBySlug(id));
+    if (!conversation) throw new Error("Assistant could not be loaded");
+    emit("select-conversation", conversation);
+  } catch (err) {
+    rowError.value = err instanceof Error ? err.message : String(err);
+  }
+}
+// Project ⋯ menus by group, so right-clicking a heading opens its menu.
+const projectMenus = new Map<string, InstanceType<typeof NavActionsMenu>>();
+function setProjectMenu(groupId: string, menu: unknown) {
+  if (menu) projectMenus.set(groupId, menu as InstanceType<typeof NavActionsMenu>);
+  else projectMenus.delete(groupId);
+}
+function projectActions(project: Project): MenuItem[] {
+  const blocker = workspace.deletionPlan(project).blocker;
+  return [
+    {
+      label: t("editProjectEllipsis"),
+      icon: "pi pi-pencil",
+      command: () => workspace.editProject(project),
+    },
+    { separator: true },
+    {
+      label: t("deleteProjectEllipsis"),
+      icon: "pi pi-trash",
+      class: "drawer-menu-danger",
+      disabled: !!blocker,
+      note: blocker || undefined,
+      command: () => workspace.deleteProject(project),
+    },
+  ];
+}
 
 // --- URL / modified-click helpers ---
 function conversationUrl(conversation: Conversation): string | null {
@@ -781,14 +977,23 @@ const tagInput = ref("");
 const tagEditorRef = ref<HTMLElement | null>(null);
 const tagInputRef = ref<HTMLInputElement | null>(null);
 const expandedSubagents = ref<Set<string>>(new Set());
+// Explicit fold choices by project id (true = collapsed). Without one, a
+// project is folded exactly while it has no rows. A project's first conversation
+// clears its choice, so the new conversation always shows. Only the active,
+// unfiltered list shows empty projects; archived and filtered views drop them.
+const groupFoldChoices = ref<Map<string, boolean>>(new Map());
+// "project" groups by project (see the workspace); workspace mode
+// always does, and offers no other grouping.
 const groupBy = ref<GroupBy>(
   (() => {
+    if (workspaceMode) return "project";
     const stored = localStorage.getItem("shelley-group-by");
     return stored === "cwd" ||
       stored === "git_repo" ||
       stored === "tag" ||
       stored === "participants" ||
-      stored === "daily"
+      stored === "daily" ||
+      stored === "project"
       ? stored
       : "none";
   })(),
@@ -847,10 +1052,12 @@ const multipleParticipantsAvailable = computed(
 // nothing to group by.
 const groupByOptions = computed<GroupBy[]>(() =>
   hasMultiParticipantConversation(activeParticipantConversations.value)
-    ? ["none", "cwd", "git_repo", "tag", "daily", "participants"]
-    : ["none", "cwd", "git_repo", "tag", "daily"],
+    ? ["none", "cwd", "git_repo", "tag", "daily", "project", "participants"]
+    : ["none", "cwd", "git_repo", "tag", "daily", "project"],
 );
-let participantDefaultsSeeded = false;
+// Workspace mode never seeds it: conversations the Assistant or the API start
+// have no human author, so a user: filter would hide them.
+let participantDefaultsSeeded = workspaceMode;
 watch(
   multipleParticipantsAvailable,
   (available) => {
@@ -1077,9 +1284,10 @@ function toggleSubagents(e: MouseEvent, conversationId: string) {
 async function loadArchivedConversations() {
   loadingArchived.value = true;
   try {
+    rowError.value = "";
     archivedConversations.value = await api.getArchivedConversations();
   } catch (err) {
-    console.error("Failed to load archived conversations:", err);
+    rowError.value = errorMessage(err);
   } finally {
     loadingArchived.value = false;
   }
@@ -1105,28 +1313,41 @@ function formatDate(timestamp: string): string {
 
 const formatCwdForDisplay = tildifyPath;
 
+function workingDirectory(c: Conversation): { text: string; title: string } | null {
+  const data = workspace.data.value;
+  const vm = data?.vms.find(
+    (v) => v.conversation_id === c.conversation_id || v.conversation_id === c.parent_conversation_id,
+  );
+  if (vm?.dir) return { text: `${vm.vm_name}:${tildifyPath(vm.dir)}`, title: `${vm.vm_name}:${vm.dir}` };
+  if (!c.cwd) return null;
+  return { text: formatCwdForDisplay(c.cwd) ?? c.cwd, title: c.cwd };
+}
+
 // --- Archive / unarchive / delete ---
 async function handleArchive(e: MouseEvent, conversationId: string) {
   e.stopPropagation();
+  if (workspace.isAssistant(conversationId)) return;
   const nextConversation = neighborAfterRemoval(flatVisualOrder, conversationId);
   try {
+    rowError.value = "";
     await api.archiveConversation(conversationId);
-    emit("archived", conversationId, nextConversation);
+    emit("removed", conversationId, nextConversation);
     if (showArchived.value) void loadArchivedConversations();
   } catch (err) {
-    console.error("Failed to archive conversation:", err);
+    rowError.value = errorMessage(err);
   }
 }
 async function handleUnarchive(e: MouseEvent, conversationId: string) {
   e.stopPropagation();
   try {
+    rowError.value = "";
     const conversation = await api.unarchiveConversation(conversationId);
     archivedConversations.value = archivedConversations.value.filter(
       (c) => c.conversation_id !== conversationId,
     );
     emit("unarchived", conversation);
   } catch (err) {
-    console.error("Failed to unarchive conversation:", err);
+    rowError.value = errorMessage(err);
   }
 }
 function handleDeleteClick(e: MouseEvent, conversationId: string) {
@@ -1136,13 +1357,17 @@ function handleDeleteClick(e: MouseEvent, conversationId: string) {
 async function handleConfirmDelete(e: MouseEvent, conversationId: string) {
   e.stopPropagation();
   pendingDeleteId.value = null;
+  const nextConversation = neighborAfterRemoval(flatVisualOrder, conversationId);
   try {
-    await api.deleteConversation(conversationId);
+    rowError.value = "";
+    // The composer's placeholder has nothing saved to delete.
+    if (conversationId !== COMPOSER_ROW_ID) await api.deleteConversation(conversationId);
     archivedConversations.value = archivedConversations.value.filter(
       (c) => c.conversation_id !== conversationId,
     );
+    emit("removed", conversationId, nextConversation);
   } catch (err) {
-    console.error("Failed to delete conversation:", err);
+    rowError.value = errorMessage(err);
   }
 }
 function handleCancelDelete(e: MouseEvent) {
@@ -1190,11 +1415,12 @@ async function saveTags(conversationId: string, tags: string[]) {
     normalized.push(trimmed);
   }
   try {
+    rowError.value = "";
     const updated = await api.updateConversationTags(conversationId, normalized);
     emit("renamed", updated);
     await refreshConversationSnapshots(updated);
   } catch (err) {
-    console.error("Failed to update tags:", err);
+    rowError.value = errorMessage(err);
   }
 }
 async function handleAddTag(conversation: Conversation, tag?: string) {
@@ -1228,15 +1454,37 @@ async function handleRemoveTag(conversation: Conversation, tag: string) {
   );
 }
 
+// Archived conversations' VMs that cleanup failed to delete or deliberately kept;
+// their conversations are out of sight, so their projects show why.
+function vmCleanupIssues(project: string | undefined) {
+  const data = workspace.data.value;
+  if (!data || !project) return [];
+  const memberships = new Map(data.conversations.map((c) => [c.conversation_id, c.project]));
+  return data.vms.filter(
+    (vm) =>
+      vm.conversation_archived &&
+      vm.error &&
+      (vm.status === "deleting" || vm.status === "kept") &&
+      memberships.get(vm.conversation_id) === project,
+  );
+}
+
 // --- Row actions ---
 function conversationActions(conversation: Conversation): MenuItem[] {
   const id = conversation.conversation_id;
-  return [
-    {
-      label: t("archive"),
-      icon: "pi pi-inbox",
-      command: ({ originalEvent }) => void handleArchive(originalEvent as MouseEvent, id),
-    },
+  if (workspace.isAssistant(id)) return [];
+  // Archiving a conversation that owns a VM deletes the VM, so it asks first.
+  const note = workspace.archiveNote(id);
+  const archive: MenuItem = {
+    label: note ? `${t("archive")}…` : t("archive"),
+    icon: "pi pi-inbox",
+    class: note ? "drawer-menu-danger" : undefined,
+    command: ({ originalEvent }) =>
+      void workspace.confirmArchive(id, () => handleArchive(originalEvent as MouseEvent, id)),
+  };
+  // Stock Shelley lists Archive first; workspace mode sets it apart, last.
+  const items: MenuItem[] = [
+    ...(workspaceMode ? [] : [archive]),
     {
       label: t("rename"),
       icon: "pi pi-pencil",
@@ -1248,6 +1496,33 @@ function conversationActions(conversation: Conversation): MenuItem[] {
       command: ({ originalEvent }) => handleOpenTagEditor(originalEvent as MouseEvent, id),
     },
   ];
+  const current = workspace.projectFor(id);
+  const targets = workspace.data.value?.projects.filter((p) => p.name !== current?.name) ?? [];
+  if (!conversation.parent_conversation_id && targets.length) {
+    // The server moves only idle conversations.
+    const working = workingIds.value.has(id);
+    items.push({
+      label: t("moveToProject"),
+      icon: "pi pi-folder",
+      disabled: working,
+      note: working ? t("waitUntilIdle") : undefined,
+      items: targets.map((target) => ({
+        label: target.name,
+        command: () => void moveConversation(id, target.name),
+      })),
+    });
+  }
+  if (workspaceMode) items.push({ separator: true }, archive);
+  return items;
+}
+const workingIds = computed(() => workingConversationIds(props.conversations));
+async function moveConversation(id: string, project: string) {
+  try {
+    await workspaceApi.moveConversation(id, project);
+    await workspace.refresh();
+  } catch (err) {
+    rowError.value = errorMessage(err);
+  }
 }
 // One right-click menu serves every row; opening it on another row moves it.
 const contextMenuRef = ref<InstanceType<typeof ContextMenu> | null>(null);
@@ -1288,16 +1563,17 @@ async function handleRename(conversationId: string) {
     (c) => c.slug === sanitized && c.conversation_id !== conversationId,
   );
   if (isDuplicate) {
-    alert(t("duplicateName"));
+    rowError.value = t("duplicateName");
     return;
   }
   editingId.value = null;
   try {
+    rowError.value = "";
     const updated = await api.renameConversation(conversationId, sanitized);
     emit("renamed", updated);
     await refreshConversationSnapshots(updated);
   } catch (err) {
-    console.error("Failed to rename conversation:", err);
+    rowError.value = errorMessage(err);
   }
 }
 function handleRenameKeyDown(e: KeyboardEvent, conversationId: string) {
@@ -1322,6 +1598,17 @@ function handleCopyGitHash(e: MouseEvent, hash: string, convId: string) {
     .catch(() => {});
 }
 
+function projectGroupCollapsed(group: { id: string; conversations: unknown[] }) {
+  return groupFoldChoices.value.get(group.id) ?? group.conversations.length === 0;
+}
+
+function toggleProjectGroup(group: { id: string; conversations: unknown[] }) {
+  groupFoldChoices.value = new Map(groupFoldChoices.value).set(
+    group.id,
+    !projectGroupCollapsed(group),
+  );
+}
+
 function handleGroupByChange(value: GroupBy) {
   groupBy.value = value;
   selectDay(value === "daily" ? shiftLocalDay(new Date(), 0) : null);
@@ -1331,6 +1618,7 @@ function handleGroupByChange(value: GroupBy) {
 function groupByLabel(value: GroupBy): string {
   const labels: Record<GroupBy, string> = {
     none: t("noGrouping"),
+    project: t("groupByProject"),
     daily: "Daily",
     cwd: t("directory"),
     git_repo: t("gitRepo"),
@@ -1450,7 +1738,9 @@ const stableTopLevelConversations = computed(() => {
   resetOrderRefsForResort();
   void resortKey.value;
   const sorted = sortConversationsByBucket(
-    props.conversations.filter((c) => !c.parent_conversation_id),
+    props.conversations.filter(
+      (c) => !c.parent_conversation_id && !workspace.isAssistant(c.conversation_id),
+    ),
   );
   const { items, order } = applyStableOrder(sorted, topOrder);
   topOrder = order;
@@ -1499,7 +1789,9 @@ const draftLabels = computed<Record<string, string>>(() => {
 const stableArchivedConversations = computed(() => {
   resetOrderRefsForResort();
   void resortKey.value;
-  const sorted = sortConversationsByBucket(archivedConversations.value);
+  const sorted = sortConversationsByBucket(
+    archivedConversations.value.filter((c) => !workspace.isAssistant(c.conversation_id)),
+  );
   const { items, order } = applyStableOrder(sorted, archivedOrder);
   archivedOrder = order;
   return filterConversationsByQuery(
@@ -1560,7 +1852,10 @@ const displayedConversations = computed<(Conversation | ConversationWithState)[]
   if (isSearching.value)
     return filterConversationsByQuery(
       filterConversationsByParticipantQuery(
-        filterConversationsByDay(searchResults.value ?? [], selectedDay.value),
+        filterConversationsByDay(
+          (searchResults.value ?? []).filter((c) => !workspace.isAssistant(c.conversation_id)),
+          selectedDay.value,
+        ),
         selectedUsers.value,
         parsedQuery.value.includeUnattributed,
       ),
@@ -1584,13 +1879,18 @@ const cacheActiveTopLevelRows = computed(
 const tagFilterPool = computed<ConversationWithParticipants[]>(() => {
   if (isSearching.value)
     return filterConversationsByParticipantQuery(
-      filterConversationsByDay(searchResults.value ?? [], selectedDay.value),
+      filterConversationsByDay(
+        (searchResults.value ?? []).filter((c) => !workspace.isAssistant(c.conversation_id)),
+        selectedDay.value,
+      ),
       selectedUsers.value,
       parsedQuery.value.includeUnattributed,
     );
   const pool = showArchived.value
     ? archivedConversations.value
-    : props.conversations.filter((c) => !c.parent_conversation_id);
+    : props.conversations.filter(
+        (c) => !c.parent_conversation_id && !workspace.isAssistant(c.conversation_id),
+      );
   return filterConversationsByParticipantQuery(
     filterConversationsByDay(pool, selectedDay.value),
     selectedUsers.value,
@@ -1790,6 +2090,40 @@ function clearParticipantFilter() {
   searchQuery.value = next.trim() === "" ? "" : next;
 }
 
+// Null until the workspace loads: the list stays ungrouped meanwhile.
+const projectGroups = computed(() => {
+  const data = workspace.data.value;
+  if (!data) return null;
+  const memberships = new Map(data.conversations.map((c) => [c.conversation_id, c.project]));
+  const groups = data.projects.map((project) => ({
+    id: `project:${project.name}`,
+    label: project.name,
+    project: project as Project | null,
+    conversations: [] as Conversation[],
+  }));
+  const byName = new Map(groups.map((group) => [group.label, group]));
+  const noProject = {
+    id: "__no_project__",
+    label: t("noProject"),
+    project: null,
+    conversations: [] as Conversation[],
+  };
+  for (const conversation of displayedConversations.value) {
+    if (workspace.isAssistant(conversation.conversation_id)) continue;
+    const project =
+      memberships.get(conversation.conversation_id) ??
+      (conversation.parent_conversation_id
+        ? memberships.get(conversation.parent_conversation_id)
+        : undefined);
+    const group = project ? byName.get(project) : undefined;
+    (group ?? noProject).conversations.push(conversation);
+  }
+  if (noProject.conversations.length) groups.push(noProject);
+  return showArchived.value || searchToolbarActive.value
+    ? groups.filter((group) => group.conversations.length)
+    : groups;
+});
+
 interface Group {
   label: string;
   conversations: ConversationWithState[];
@@ -1798,6 +2132,7 @@ const groupedConversations = computed<[string, Group][] | null>(() => {
   if (
     groupBy.value === "none" ||
     groupBy.value === "daily" ||
+    groupBy.value === "project" ||
     showArchived.value ||
     isSearching.value
   )
@@ -1913,11 +2248,35 @@ function groupTitle(key: string, group: Group): string | undefined {
   return groupBy.value === "tag" || groupBy.value === "participants" ? group.label : key;
 }
 
+// Unfold a project when its first conversation arrives. Counts are compared only
+// within the active, unfiltered list, so switching views is no arrival.
+let activeGroupCounts: Map<string, number> | null = null;
+watch(projectGroups, (groups) => {
+  if (!groups || showArchived.value || searchToolbarActive.value) {
+    activeGroupCounts = null;
+    return;
+  }
+  const previous = activeGroupCounts;
+  activeGroupCounts = new Map(groups.map((group) => [group.id, group.conversations.length]));
+  const arrived = groups.filter(
+    (group) => previous?.get(group.id) === 0 && group.conversations.length > 0,
+  );
+  if (!arrived.some((group) => groupFoldChoices.value.has(group.id))) return;
+  const next = new Map(groupFoldChoices.value);
+  for (const group of arrived) next.delete(group.id);
+  groupFoldChoices.value = next;
+});
+
 // Maintain the flat visual order for archive-based next-selection.
 watch(
-  [groupedConversations, displayedConversations],
-  ([grouped, displayed]) => {
-    flatVisualOrder = grouped ? grouped.flatMap(([, group]) => group.conversations) : displayed;
+  [groupBy, projectGroups, groupFoldChoices, groupedConversations, displayedConversations],
+  ([by, projects, , grouped, displayed]) => {
+    flatVisualOrder =
+      by === "project" && projects
+        ? projects.flatMap((group) => (projectGroupCollapsed(group) ? [] : group.conversations))
+        : grouped
+          ? grouped.flatMap(([, group]) => group.conversations)
+          : displayed;
   },
   { immediate: true },
 );
@@ -1950,7 +2309,7 @@ provide(DrawerCtxKey, {
     return counts;
   }),
   subagentsByParent,
-  workingIds: computed(() => workingConversationIds(props.conversations)),
+  workingIds,
   expandedSubagents,
   seenIds,
   copiedConvId,
@@ -1970,6 +2329,7 @@ provide(DrawerCtxKey, {
   toggleTagFilter,
   formatDate,
   formatCwdForDisplay,
+  workingDirectory,
   handleModifiedClick,
   handleAuxClick,
   selectConversation: (c: Conversation) => emit("select-conversation", c),

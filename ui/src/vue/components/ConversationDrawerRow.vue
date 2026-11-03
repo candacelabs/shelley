@@ -8,6 +8,10 @@
   <div
     :class="`conversation-item ${isActive ? 'active' : ''}${isNew ? ' conversation-item-enter' : ''}${ctx.contextMenuId.value === conversation.conversation_id ? ' context-menu-target' : ''}`"
     :data-conversation-id="conversation.conversation_id"
+    role="link"
+    tabindex="0"
+    :aria-current="isActive ? 'page' : undefined"
+    @keydown.enter.self.prevent="ctx.selectConversation(conversation)"
     style="cursor: pointer"
     @click="onRowClick"
     @auxclick="ctx.handleAuxClick($event, conversation)"
@@ -39,7 +43,10 @@
             <em v-if="!conversation.slug">untitled</em>
             <template v-else>
               <template
-                v-for="(seg, i) in highlightSearchMatches(conversation.slug, ctx.searchText.value)"
+                v-for="(seg, i) in highlightSearchMatches(
+                  conversationTitle(conversation.slug),
+                  ctx.searchText.value,
+                )"
                 :key="i"
               >
                 <mark v-if="seg.mark" class="conversation-snippet-mark">{{ seg.text }}</mark>
@@ -60,29 +67,11 @@
           aria-label="Conversation interrupted"
         />
         <div v-if="hasActions" class="conversation-actions drawer-actions-row drawer-actions-top">
-          <Button
-            class="btn-icon-sm drawer-actions-trigger"
-            text
-            severity="secondary"
-            size="small"
-            v-tooltip.top="{ value: ctx.t('actions'), showDelay: 400, hideDelay: 150 }"
-            :aria-label="ctx.t('actions')"
-            aria-haspopup="menu"
-            :aria-expanded="actionsMenuOpen"
-            @click.stop="toggleActionsMenu"
-          >
-            <OverflowDotsIcon class="drawer-actions-trigger-icon" />
-          </Button>
-          <Menu
+          <NavActionsMenu
             ref="actionsMenuRef"
-            :model="actionsMenuItems"
-            popup
-            :aria-label="ctx.t('actions')"
-            :pt="{
-              root: { class: 'drawer-actions-menu', 'data-testid': 'conversation-actions-menu' },
-            }"
-            @show="actionsMenuOpen = true"
-            @hide="actionsMenuOpen = false"
+            :items="actionsMenuItems"
+            :label="ctx.t('actions')"
+            testid="conversation-actions-menu"
           />
         </div>
       </div>
@@ -199,10 +188,10 @@
       <div class="conversation-meta">
         <span class="conversation-date">{{ ctx.formatDate(conversation.updated_at) }}</span>
         <PathText
-          v-if="conversation.cwd && ctx.groupBy.value !== 'cwd'"
+          v-if="workingDirectory && ctx.groupBy.value !== 'cwd'"
           class="conversation-cwd"
-          :text="ctx.formatCwdForDisplay(conversation.cwd)"
-          :title="conversation.cwd"
+          :text="workingDirectory.text"
+          :title="workingDirectory.title"
         />
         <!-- Terminal count. Only shown when the conversation has more than
              one terminal pinned to it: a single terminal is the ordinary
@@ -306,7 +295,7 @@
             />
           </svg>
         </button>
-        <div v-if="isDraft && !isPlaceholder" class="conversation-actions drawer-actions-row">
+        <div v-if="deletable" class="conversation-actions drawer-actions-row">
           <DeleteButton :conversation-id="conversation.conversation_id" />
         </div>
       </div>
@@ -382,6 +371,10 @@
     <template v-for="sub in conversationSubagents" :key="sub.conversation_id">
       <div
         :class="`conversation-item subagent-item drawer-subagent-item-style ${sub.conversation_id === ctx.currentConversationId.value ? 'active' : ''}${ctx.seenIds.value !== null && !ctx.seenIds.value.has(sub.conversation_id) ? ' conversation-item-enter' : ''}`"
+        role="link"
+        tabindex="0"
+        :aria-current="sub.conversation_id === ctx.currentConversationId.value ? 'page' : undefined"
+        @keydown.enter.self.prevent="ctx.selectConversation(sub)"
         @click="onSubClick($event, sub)"
         @auxclick="ctx.handleAuxClick($event, sub)"
       >
@@ -437,12 +430,12 @@ import {
   type VNode,
 } from "vue";
 import Button from "primevue/button";
-import Menu from "primevue/menu";
-import OverflowDotsIcon from "./OverflowDotsIcon.vue";
+import NavActionsMenu from "./NavActionsMenu.vue";
 import WorkspaceActionIcon from "./WorkspaceActionIcon.vue";
 import type { Conversation, ConversationWithState } from "../../types";
 import { isImeComposing } from "../../utils/imeComposing";
 import { highlightSearchMatches } from "../../utils/searchHighlight";
+import { conversationTitle } from "../../utils/conversationTitle";
 import {
   DrawerCtxKey,
   parseTags,
@@ -463,10 +456,10 @@ const composerPreview = inject(ComposerPreviewKey, null);
 
 const renameInput = ref<HTMLInputElement | null>(null);
 const tagInput = ref<HTMLInputElement | null>(null);
-const actionsMenuRef = ref<InstanceType<typeof Menu> | null>(null);
-const actionsMenuOpen = ref(false);
+const actionsMenuRef = ref<InstanceType<typeof NavActionsMenu> | null>(null);
 const actionsMenuItems = computed(() => ctx.conversationActions(props.conversation));
 
+const workingDirectory = computed(() => ctx.workingDirectory(props.conversation));
 const convState = computed(() => props.conversation as ConversationWithState);
 const participantSummaries = computed(() => {
   const values =
@@ -542,6 +535,10 @@ const draftText = computed(() =>
     : props.conversation.draft,
 );
 
+const deletable = computed(
+  () => isDraft.value && (!isPlaceholder.value || !!composerPreview?.leavable.value),
+);
+
 const isActive = computed(
   () => props.conversation.conversation_id === ctx.currentConversationId.value,
 );
@@ -574,7 +571,13 @@ const isExpanded = computed(() =>
   ctx.expandedSubagents.value.has(props.conversation.conversation_id),
 );
 const itemArchived = computed(() => props.conversation.archived);
-const hasActions = computed(() => !isDraft.value && !itemArchived.value && !isPlaceholder.value);
+const hasActions = computed(
+  () =>
+    !isDraft.value &&
+    !itemArchived.value &&
+    !isPlaceholder.value &&
+    actionsMenuItems.value.length > 0,
+);
 const isNew = computed(
   () =>
     !isDraft.value &&
@@ -617,10 +620,6 @@ function onRowContextMenu(e: MouseEvent) {
 watch(ctx.contextMenuId, (id) => {
   if (id !== null) actionsMenuRef.value?.hide();
 });
-
-function toggleActionsMenu(e: MouseEvent) {
-  actionsMenuRef.value?.toggle(e);
-}
 
 function dispatchParticipantTooltipFocus(target: EventTarget | null, type: "focus" | "blur") {
   if (target instanceof HTMLElement) target.dispatchEvent(new FocusEvent(type));

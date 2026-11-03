@@ -189,3 +189,28 @@ func (server *testServer) startCluster() error {
 	server.admin = server.dsn("postgres")
 	return nil
 }
+
+// AddTestProject creates project name for tests that need one, unless it
+// exists. Its instructions are "Instructions of <name>.", and it has two
+// actions: release (archives on success) and test, both reported to the agent.
+func AddTestProject(tb testTB, database *DB, name string) {
+	tb.Helper()
+	if _, err := database.GetProject(context.Background(), name); err == nil {
+		return
+	}
+	_, err := database.CreateProject(context.Background(), Project{Name: name, Instructions: "Instructions of " + name + ".", Actions: []ProjectAction{
+		{ID: "release", Label: "make release", Command: "make release", ArchiveOnSuccess: true},
+		{ID: "test", Label: "make test", Command: "make test"},
+	}}, "")
+	if err != nil {
+		tb.Fatalf("add test project: %v", err)
+	}
+}
+
+// EnableWorkspaceMode turns on workspace mode (see WorkspaceFlag).
+func EnableWorkspaceMode(tb testTB, db *DB) {
+	tb.Helper()
+	if err := db.SetFeatureFlagOverride(context.Background(), WorkspaceFlag, "true"); err != nil {
+		tb.Fatalf("enable workspace mode: %v", err)
+	}
+}

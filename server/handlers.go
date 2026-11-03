@@ -578,6 +578,10 @@ func (s *Server) serveIndexWithInit(w http.ResponseWriter, r *http.Request, fs h
 
 	// Build initialization data
 	modelList := s.getModelList()
+	if err := s.hideDismissedUpgrades(r.Context(), modelList); err != nil {
+		s.internalError(w, "Failed to read dismissed upgrades", err)
+		return
+	}
 	defaultModel := s.effectiveDefaultModel(modelList)
 	markDefaultModel(modelList, defaultModel)
 
@@ -604,14 +608,22 @@ func (s *Server) serveIndexWithInit(w http.ResponseWriter, r *http.Request, fs h
 	// Note: AGENTS.md content is NOT embedded in init data. It is fetched fresh
 	// via /api/user-agents-md when the editor modal opens so that reopening
 	// after a save shows current disk state, not stale page-load content.
+	promptDone, err := s.db.GetSetting(r.Context(), upgradePromptKey)
+	if err != nil {
+		s.internalError(w, "Failed to read settings", err)
+		return
+	}
 	initData := map[string]interface{}{
-		"models":              modelList,
-		"default_model":       defaultModel,
-		"hostname":            hostname,
-		"default_cwd":         defaultCwd,
-		"home_dir":            homeDir,
-		"user_agents_md_path": userAgentsMdPath,
-		"user_email":          strings.TrimSpace(r.Header.Get("X-ExeDev-Email")),
+		// workspace mode: see FlagWorkspace.
+		"workspace":                 s.assistantID() != "",
+		"models":                    modelList,
+		"model_upgrade_prompt_done": promptDone != "",
+		"default_model":             defaultModel,
+		"hostname":                  hostname,
+		"default_cwd":               defaultCwd,
+		"home_dir":                  homeDir,
+		"user_agents_md_path":       userAgentsMdPath,
+		"user_email":                strings.TrimSpace(r.Header.Get("X-ExeDev-Email")),
 		// is_exe_dev lets the UI pick exe.dev-specific setup advice even when
 		// model_setup_hint is absent (the catalog can empty AFTER page load, via
 		// a detached integration plus Refresh).
@@ -651,6 +663,7 @@ func (s *Server) serveIndexWithInit(w http.ResponseWriter, r *http.Request, fs h
 	// Whether this VM has an exe.dev "notify" integration, so the UI can show
 	// the auto-configured push-notification toggle.
 	initData["exe_notify_available"] = s.exeNotifyAvailable()
+	initData["ui_build"] = s.uiBuild()
 	if s.Banner != "" {
 		initData["banner"] = s.Banner
 	}
@@ -1022,6 +1035,15 @@ type ChatRequest struct {
 	Skills []string `json:"skills,omitempty"`
 }
 
+// NewConversationRequest is the body of POST /api/conversations/new.
+type NewConversationRequest struct {
+	ChatRequest
+	// Project is the conversation's project, and therefore its profile.
+	Project string `json:"project,omitempty"`
+	// Title becomes the conversation's slug instead of a generated one.
+	Title string `json:"title,omitempty"`
+}
+
 // handleChatConversation handles POST /conversation/<id>/chat
 func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, conversationID string) {
 	ctx := r.Context()
@@ -1037,9 +1059,12 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, "Message is required", http.StatusBadRequest)
 		return
 	}
+	if !s.checkConversationRequest(w, r, conversationID, "chat") {
+		return
+	}
 	if req.ConversationOptions != nil &&
-		(req.ConversationOptions.Kind != "" || req.ConversationOptions.ParentPointer != nil || req.ConversationOptions.CommitTour != nil) {
-		http.Error(w, "kind, parent_pointer, and commit_tour are internal conversation options", http.StatusBadRequest)
+		(req.ConversationOptions.Kind != "" || req.ConversationOptions.ParentPointer != nil) {
+		http.Error(w, "kind and parent_pointer are internal conversation options", http.StatusBadRequest)
 		return
 	}
 
@@ -1132,14 +1157,6 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 	// carrier here. Both the immediate-send (recordTurnStartMessage) and queued
 	// (QueueMessage) paths read it off this ctx.
 	ctx = contextWithUserEmail(ctx, userEmail)
-
-	commitTourReasoning := db.ParseConversationOptions(existing.ConversationOptions).ThinkingLevel
-	if commitTourReasoning == "" {
-		commitTourReasoning = llm.ServiceDefaultReasoningLevel(llmService)
-	}
-	if s.handleCommitTourCommand(ctx, w, *existing, modelID, commitTourReasoning, req.Message) {
-		return
-	}
 
 	// Built-in /transcription is durable queued user input backed by a hidden
 	// child. Reject bad commands before any side effect (draft promotion or
@@ -1451,6 +1468,15 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 	}
 
 	firstMessage, err := manager.AcceptUserMessage(ctx, llmService, modelID, userMessage)
+	var invalid invalidSettings
+	if errors.As(err, &invalid) {
+		http.Error(w, invalid.Error(), http.StatusBadRequest)
+		return
+	}
+	if errors.Is(err, db.ErrConflict) {
+		s.workspaceHTTPError(w, err)
+		return
+	}
 	if errors.Is(err, errConversationModelMismatch) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -1483,17 +1509,25 @@ func (s *Server) runChatMessageHook(r *http.Request, conversationID, modelID, re
 
 // handleNewConversation handles POST /api/conversations/new - creates conversation implicitly on first message
 func (s *Server) handleNewConversation(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
 	// Parse request
-	var req ChatRequest
+	var req NewConversationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
 
+	s.newConversation(w, r, req, false)
+}
+
+// newConversation creates the conversation of req and sends its first
+// message; setup creates req.Project's base VM setup conversation.
+func (s *Server) newConversation(w http.ResponseWriter, r *http.Request, req NewConversationRequest, setup bool) {
+	ctx := r.Context()
 	if req.Message == "" {
 		http.Error(w, "Message is required", http.StatusBadRequest)
+		return
+	}
+	if !s.prepareProjectConversation(w, r, &req) {
 		return
 	}
 
@@ -1543,12 +1577,20 @@ func (s *Server) handleNewConversation(w http.ResponseWriter, r *http.Request) {
 		cwdPtr = &req.Cwd
 	}
 
-	conversation, err := s.db.CreateConversation(ctx, nil, true, cwdPtr, &modelID, convOpts)
+	conversation, releaseCreation, err := s.createProjectConversation(ctx, cwdPtr, &modelID, convOpts, req.Project, setup)
 	if err != nil {
-		s.internalError(w, "Failed to create conversation", err)
+		s.workspaceHTTPError(w, err)
 		return
 	}
+	defer releaseCreation()
+	cwdPtr = conversation.Cwd.Ptr()
 	conversationID := conversation.ConversationID
+	if title := slug.Sanitize(req.Title); title != "" {
+		if err := s.nameConversation(ctx, conversationID, title); err != nil {
+			s.internalError(w, "Failed to name conversation", err)
+			return
+		}
+	}
 
 	// Run new-conversation hook, which may override prompt, model, and cwd.
 	// Hook failures abort the request.
@@ -1658,6 +1700,14 @@ func (s *Server) handleNewConversation(w http.ResponseWriter, r *http.Request) {
 	userMessage.Content = withSkillMentions(userMessage.Content, skillNames)
 
 	firstMessage, err := manager.AcceptUserMessage(ctx, llmService, modelID, userMessage)
+	if errors.As(err, &invalid) {
+		http.Error(w, invalid.Error(), http.StatusBadRequest)
+		return
+	}
+	if errors.Is(err, db.ErrConflict) {
+		s.workspaceHTTPError(w, err)
+		return
+	}
 	if errors.Is(err, errConversationModelMismatch) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -1667,7 +1717,7 @@ func (s *Server) handleNewConversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if firstMessage && !hookSlugApplied {
+	if firstMessage && !hookSlugApplied && req.Title == "" {
 		s.generateSlugAsync(conversationID, req.Message, modelID)
 	}
 
@@ -1767,6 +1817,9 @@ func (s *Server) handleCancelConversation(w http.ResponseWriter, r *http.Request
 // startup, without adding a synthetic user message. Upgrade restarts resume
 // automatically.
 func (s *Server) handleResumeConversation(w http.ResponseWriter, r *http.Request, conversationID string) {
+	if !s.checkConversationRequest(w, r, conversationID, "resume") {
+		return
+	}
 	ctx := r.Context()
 	manager, err := s.getOrCreateConversationManager(ctx, conversationID, r.Header.Get("X-ExeDev-Email"))
 	if err != nil {
@@ -1807,6 +1860,9 @@ func (s *Server) handleResumeConversation(w http.ResponseWriter, r *http.Request
 // model. Requires a latest message of type "error" that is classified
 // retryable.
 func (s *Server) handleRetryConversation(w http.ResponseWriter, r *http.Request, conversationID string) {
+	if !s.checkConversationRequest(w, r, conversationID, "retry") {
+		return
+	}
 	ctx := r.Context()
 
 	// Validate that there's actually a retryable error to act on BEFORE
@@ -1911,6 +1967,9 @@ type continueRequest struct {
 // is left untouched (append-only log) and excluded from context, so the new
 // model sees the same request.
 func (s *Server) handleContinueConversation(w http.ResponseWriter, r *http.Request, conversationID string) {
+	if !s.checkConversationRequest(w, r, conversationID, "continue") {
+		return
+	}
 	ctx := r.Context()
 
 	// Parse the optional body (empty body is fine — defaults to Opus).
@@ -2317,7 +2376,7 @@ func (s *Server) runStream(w http.ResponseWriter, r *http.Request, conversationI
 		}
 	}
 
-	if includeConversationListPatches && !writeStreamData(StreamResponse{ModelsChanged: true}) {
+	if includeConversationListPatches && !writeStreamData(StreamResponse{ModelsChanged: true, UIBuild: s.uiBuild()}) {
 		return
 	}
 
@@ -2605,16 +2664,24 @@ type ModelInfo struct {
 	// better available sibling (see models.AssignTiers). The UI keeps tier-2
 	// models behind a "more models" affordance. Older iOS/Android clients that
 	// don't know about this field simply ignore it.
-	Tier              int      `json:"tier,omitempty"`
-	SupportsImages    bool     `json:"supports_images"`
-	SupportsReasoning bool     `json:"supports_reasoning"`
-	ReasoningLevels   []string `json:"reasoning_levels,omitempty"`
+	Tier              int           `json:"tier,omitempty"`
+	Upgrade           *ModelUpgrade `json:"upgrade,omitempty"`
+	SupportsImages    bool          `json:"supports_images"`
+	SupportsReasoning bool          `json:"supports_reasoning"`
+	ReasoningLevels   []string      `json:"reasoning_levels,omitempty"`
 	// DefaultReasoningLevel is the reasoning level a conversation gets when it
 	// carries no explicit thinking_level override. Lets the UI label
 	// conversations honestly (e.g. "Reasoning medium") instead of leaving the
 	// badge blank. Empty means the provider picks its own default and Shelley
 	// can't name it up front.
 	DefaultReasoningLevel string `json:"default_reasoning_level,omitempty"`
+}
+
+// ModelUpgrade names the ready model that replaces this one.
+type ModelUpgrade struct {
+	To   string `json:"to"`
+	Kind string `json:"kind"` // "version" | "generation"
+	Line string `json:"line"` // model class, e.g. "Opus"
 }
 
 // handleModelCommand intercepts the built-in "/model" slash command. It
@@ -2950,20 +3017,24 @@ func assignModelTiers(modelList []ModelInfo) {
 		}
 	}
 	tiers := models.AssignTiers(readyIDs)
+	ready := readyBuiltinModels(modelList)
 	for i := range modelList {
 		if modelList[i].Ready {
 			if modelList[i].SourceID != "" || modelList[i].Source == models.SourceCustomLabel {
 				modelList[i].Tier = models.Tier1
 			} else {
 				modelList[i].Tier = tiers[modelList[i].ID]
+				if to, kind, line := models.BestUpgrade(modelList[i].ID, ready); to != "" {
+					modelList[i].Upgrade = &ModelUpgrade{To: to, Kind: string(kind), Line: line}
+				}
 			}
 		}
 	}
 }
 
 // effectiveDefaultModel returns the model id to use when the client hasn't
-// picked one. A configured override wins; otherwise modelList order is
-// authoritative. Returns "" only when no model is ready.
+// picked one. A ready configured override wins; otherwise prefer ready tier-1
+// models in catalog order. Returns "" only when no model is ready.
 func (s *Server) effectiveDefaultModel(modelList []ModelInfo) string {
 	if len(modelList) == 0 {
 		return ""
@@ -2973,6 +3044,11 @@ func (s *Server) effectiveDefaultModel(modelList []ModelInfo) string {
 			if m.ID == s.defaultModel && m.Ready {
 				return s.defaultModel
 			}
+		}
+	}
+	for _, m := range modelList {
+		if m.Ready && m.Tier == models.Tier1 {
+			return m.ID
 		}
 	}
 	for _, m := range modelList {
@@ -2986,13 +3062,134 @@ func (s *Server) effectiveDefaultModel(modelList []ModelInfo) string {
 // handleModels returns the list of available models
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	modelList := s.getModelList()
+	if err := s.hideDismissedUpgrades(r.Context(), modelList); err != nil {
+		s.internalError(w, "Failed to read dismissed upgrades", err)
+		return
+	}
 	markDefaultModel(modelList, s.effectiveDefaultModel(modelList))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(modelList)
 }
 
+// readyBuiltinModels names the ready built-in models, the only ones an
+// upgrade may point at.
+func readyBuiltinModels(modelList []ModelInfo) map[string]bool {
+	ready := make(map[string]bool, len(modelList))
+	for _, m := range modelList {
+		if m.Ready && m.SourceID == "" && m.Source != models.SourceCustomLabel {
+			ready[m.ID] = true
+		}
+	}
+	return ready
+}
+
+const upgradeDismissedKeyPrefix = "model_upgrade_dismissed:"
+
+func upgradeDismissedKey(from, to string) string {
+	return upgradeDismissedKeyPrefix + from + ":" + to
+}
+
+// upgradePromptKey records that the "upgrade your other conversations too?"
+// offer has been answered, so it is never made again.
+const upgradePromptKey = "model_upgrade_prompt_done"
+
+// hideDismissedUpgrades drops only the exact upgrade pairs the user dismissed.
+func (s *Server) hideDismissedUpgrades(ctx context.Context, modelList []ModelInfo) error {
+	settings, err := s.db.GetAllSettings(ctx)
+	if err != nil {
+		return err
+	}
+	for i := range modelList {
+		if u := modelList[i].Upgrade; u != nil && settings[upgradeDismissedKey(modelList[i].ID, u.To)] != "" {
+			modelList[i].Upgrade = nil
+		}
+	}
+	return nil
+}
+
+// handleDismissModelUpgrade stops suggesting one exact model upgrade.
+func (s *Server) handleDismissModelUpgrade(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		From string `json:"from"`
+		To   string `json:"to"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || models.ByID(req.From) == nil || models.ByID(req.To) == nil {
+		http.Error(w, "from and to must be built-in model ids", http.StatusBadRequest)
+		return
+	}
+	if err := s.db.SetSetting(r.Context(), upgradeDismissedKey(req.From, req.To), "1"); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Other open clients should drop the banner too.
+	s.notifyModelsChanged()
+	w.WriteHeader(http.StatusNoContent)
+}
+
 type builtModelRefresher interface {
 	RefreshBuiltModels([]models.Built) error
+}
+
+// handleUpgradeAllModels repeats the switch the user just made, from -> to, on
+// every other conversation still on `from`, then spends the offer.
+// Conversations mid-turn are skipped, since a switch stops the turn.
+func (s *Server) handleUpgradeAllModels(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		From string `json:"from"`
+		To   string `json:"to"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	ready := readyBuiltinModels(s.getModelList())
+	if to, _, _ := models.BestUpgrade(req.From, ready); to == "" || to != req.To {
+		http.Error(w, "to must be the upgrade offered for from", http.StatusBadRequest)
+		return
+	}
+	ctx := r.Context()
+	userEmail := r.Header.Get("X-ExeDev-Email")
+	ctx = contextWithUserEmail(ctx, userEmail)
+	items, err := s.db.ListConversations(ctx, 5000, 0)
+	if err != nil {
+		s.internalError(w, "Failed to list conversations", err)
+		return
+	}
+	to := req.To
+	upgraded, skipped := 0, 0
+	for _, item := range items {
+		if item.IsDraft || item.Archived || derefString(item.Model.Ptr()) != req.From {
+			continue
+		}
+		if s.IsAgentWorking(item.ConversationID) {
+			skipped++
+			continue
+		}
+		manager, err := s.getOrCreateConversationManager(ctx, item.ConversationID, userEmail)
+		if err != nil {
+			s.internalError(w, "Failed to reach conversation "+item.ConversationID, err)
+			return
+		}
+		if _, err := s.changeSettings(ctx, manager, SettingsChange{Model: &to}); err != nil {
+			s.internalError(w, "Failed to switch conversation "+item.ConversationID, err)
+			return
+		}
+		upgraded++
+	}
+	if err := s.db.SetSetting(ctx, upgradePromptKey, "1"); err != nil {
+		s.internalError(w, "Failed to record the offer", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"upgraded": upgraded, "skipped": skipped})
+}
+
+// handleDismissUpgradePrompt spends the offer without moving anything.
+func (s *Server) handleDismissUpgradePrompt(w http.ResponseWriter, r *http.Request) {
+	if err := s.db.SetSetting(r.Context(), upgradePromptKey, "1"); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleModelRefresh refreshes the non-custom model catalog and returns the
@@ -3018,6 +3215,10 @@ func (s *Server) handleModelRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	s.notifyModelsChanged()
 	modelList := s.getModelList()
+	if err := s.hideDismissedUpgrades(r.Context(), modelList); err != nil {
+		s.internalError(w, "Failed to read dismissed upgrades", err)
+		return
+	}
 	markDefaultModel(modelList, s.effectiveDefaultModel(modelList))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(modelList)
@@ -3142,7 +3343,17 @@ func (s *Server) handleArchivedConversations(w http.ResponseWriter, r *http.Requ
 
 // handleArchiveConversation handles POST /conversation/<id>/archive
 func (s *Server) handleArchiveConversation(w http.ResponseWriter, r *http.Request, conversationID string) {
+	done, ok := s.beginConversationMutation(w, r, conversationID, "archive")
+	if !ok {
+		return
+	}
+	defer done()
 	ctx := r.Context()
+	member, err := s.inProject(ctx, conversationID)
+	if err != nil {
+		s.internalError(w, "Failed to load conversation's project", err, "conversationID", conversationID)
+		return
+	}
 	conversation, err := s.db.ArchiveConversation(ctx, conversationID)
 	if err != nil {
 		s.internalError(w, "Failed to archive conversation", err, "conversationID", conversationID)
@@ -3155,6 +3366,9 @@ func (s *Server) handleArchiveConversation(w http.ResponseWriter, r *http.Reques
 	if manager != nil {
 		manager.cancelIdleCompaction()
 	}
+	if member {
+		s.notifyWorkspaceChanged() // and delete the conversation's VM, if it has one
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(conversation)
@@ -3163,10 +3377,18 @@ func (s *Server) handleArchiveConversation(w http.ResponseWriter, r *http.Reques
 // handleUnarchiveConversation handles POST /conversation/<id>/unarchive
 func (s *Server) handleUnarchiveConversation(w http.ResponseWriter, r *http.Request, conversationID string) {
 	ctx := r.Context()
+	member, err := s.inProject(ctx, conversationID)
+	if err != nil {
+		s.internalError(w, "Failed to load conversation's project", err, "conversationID", conversationID)
+		return
+	}
 	conversation, err := s.db.UnarchiveConversation(ctx, conversationID)
 	if err != nil {
 		s.internalError(w, "Failed to unarchive conversation", err, "conversationID", conversationID)
 		return
+	}
+	if member {
+		s.notifyWorkspaceChanged() // and stop deleting the conversation's VM, if it has one
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -3175,12 +3397,25 @@ func (s *Server) handleUnarchiveConversation(w http.ResponseWriter, r *http.Requ
 
 // handleDeleteConversation handles POST /conversation/<id>/delete
 func (s *Server) handleDeleteConversation(w http.ResponseWriter, r *http.Request, conversationID string) {
+	done, ok := s.beginConversationMutation(w, r, conversationID, "delete")
+	if !ok {
+		return
+	}
+	defer done()
 	ctx := r.Context()
+	member, err := s.inProject(ctx, conversationID)
+	if err != nil {
+		s.internalError(w, "Failed to load conversation's project", err, "conversationID", conversationID)
+		return
+	}
 	if err := s.deleteConversation(ctx, conversationID); err != nil {
 		// The terminals are already global at this point. That is harmless and
 		// visible to the user, so no rollback is attempted.
 		s.internalError(w, "Failed to delete conversation", err, "conversationID", conversationID)
 		return
+	}
+	if member {
+		s.notifyWorkspaceChanged()
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -3222,6 +3457,11 @@ type RenameRequest struct {
 
 // handleRenameConversation handles POST /conversation/<id>/rename
 func (s *Server) handleRenameConversation(w http.ResponseWriter, r *http.Request, conversationID string) {
+	done, ok := s.beginConversationMutation(w, r, conversationID, "rename")
+	if !ok {
+		return
+	}
+	defer done()
 	ctx := r.Context()
 
 	var req RenameRequest
@@ -3265,6 +3505,11 @@ type SetCwdRequest struct {
 // updated but the running toolset not, or vice versa — is worse than a refused
 // one, because nothing afterwards would notice the disagreement.
 func (s *Server) handleSetConversationCwd(w http.ResponseWriter, r *http.Request, conversationID string) {
+	done, ok := s.beginConversationMutation(w, r, conversationID, "cwd")
+	if !ok {
+		return
+	}
+	defer done()
 	ctx := r.Context()
 
 	var req SetCwdRequest
@@ -3441,15 +3686,23 @@ func (s *Server) handleVersionChangelog(w http.ResponseWriter, r *http.Request) 
 // handleUpgrade performs a self-update of the Shelley binary
 // If restart=true query parameter is set, it will also restart after upgrade
 func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
+	restart := r.URL.Query().Get("restart") == "true"
+	// A restart is refused (409) before upgrading, never after.
+	if restart {
+		if err := s.prepareRestart(r.Context()); err != nil {
+			s.workspaceHTTPError(w, err)
+			return
+		}
+	}
 	err := s.versionChecker.DoUpgrade(r.Context())
 	if err != nil {
+		if restart {
+			s.releaseRestart()
+		}
 		s.logger.Error("Upgrade failed", "error", err)
 		http.Error(w, fmt.Sprintf("Upgrade failed: %v", err), http.StatusInternalServerError)
 		return
 	}
-
-	// Check if restart was requested
-	restart := r.URL.Query().Get("restart") == "true"
 
 	w.Header().Set("Content-Type", "application/json")
 	if restart {
@@ -3639,11 +3892,16 @@ const restartExitCode = 1
 // handleExit exits the process, expecting systemd or similar to restart it.
 // With ?resume=true, in-flight conversations continue on the next process.
 func (s *Server) handleExit(w http.ResponseWriter, r *http.Request) {
+	if err := s.prepareRestart(r.Context()); err != nil {
+		s.workspaceHTTPError(w, err)
+		return
+	}
 	resume := r.URL.Query().Get("resume") == "true"
 	message := "Exiting..."
 	exitCode := 0
 	if resume {
 		if err := s.markResumeAfterRestart(r.Context()); err != nil {
+			s.releaseRestart()
 			s.logger.Error("Failed to mark conversations for resume after restart", "error", err)
 			http.Error(w, fmt.Sprintf("Failed to prepare conversations for restart: %v", err), http.StatusInternalServerError)
 			return
@@ -3661,11 +3919,7 @@ func (s *Server) handleExit(w http.ResponseWriter, r *http.Request) {
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}
-	go func() {
-		time.Sleep(s.exitDelay)
-		s.logger.Info("Exiting Shelley via /exit endpoint", "resume", resume, "exit_code", exitCode)
-		s.exitProcess(exitCode)
-	}()
+	s.scheduleExit(exitCode)
 }
 
 // handleGetSettings retrieves all settings
@@ -4187,8 +4441,8 @@ func validateModelReasoningLevel(model *ModelInfo, level string) string {
 }
 
 func validateConversationOptions(opts db.ConversationOptions) string {
-	if opts.Kind != "" || opts.ParentPointer != nil || opts.CommitTour != nil {
-		return "kind, parent_pointer, and commit_tour are internal conversation options"
+	if opts.Kind != "" || opts.ParentPointer != nil {
+		return "kind and parent_pointer are internal conversation options"
 	}
 	if err := validateSystemPromptTemplate(opts.SystemPrompt); err != nil {
 		return "Invalid system_prompt: " + err.Error()

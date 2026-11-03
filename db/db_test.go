@@ -341,13 +341,21 @@ func TestMessagesTypeHasNoCheckConstraint(t *testing.T) {
 	assertMessagesTableHasNoCheck(t, db, ctx)
 }
 
-// migratedTestDB is a test database with Shelley's whole schema: on
-// PostgreSQL there is one schema (postgres_schema.sql), not a migration
-// history to stop part way through.
+// migratedTestDB is a test database as the schema leaves it, before
+// Migrate syncs the built-in profiles: the seeded Default and no other
+// built-in. On PostgreSQL there is one schema (postgres_schema.sql), not a
+// migration history to stop part way through; this is the state upstream's
+// tests reach by stopping before the built-ins shipped.
 func migratedTestDB(t *testing.T) *DB {
 	t.Helper()
 	database, cleanup := NewTestDB(t)
 	t.Cleanup(cleanup)
+	if err := database.pool.Exec(t.Context(), `DELETE FROM builtin_profiles WHERE name <> 'Default'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.pool.Exec(t.Context(), `DELETE FROM profiles WHERE builtin AND name <> 'Default'`); err != nil {
+		t.Fatal(err)
+	}
 	return database
 }
 

@@ -387,6 +387,9 @@ func (s *Server) handleGetConversationSettings(w http.ResponseWriter, r *http.Re
 // It responds with the settings now in effect. A running turn is stopped
 // first, as with /model, unless only the profile label changes.
 func (s *Server) handleConversationSettings(w http.ResponseWriter, r *http.Request, conversationID string) {
+	if !s.checkConversationRequest(w, r, conversationID, "settings") {
+		return
+	}
 	ctx := r.Context()
 	var change SettingsChange
 	dec := json.NewDecoder(r.Body)
@@ -398,6 +401,10 @@ func (s *Server) handleConversationSettings(w http.ResponseWriter, r *http.Reque
 	conv, err := s.db.GetConversationByID(ctx, conversationID)
 	if err != nil {
 		http.Error(w, "Conversation not found", http.StatusNotFound)
+		return
+	}
+	if err := s.checkProfileSwitch(ctx, *conv, change); err != nil {
+		s.workspaceHTTPError(w, err)
 		return
 	}
 	switch {
@@ -422,7 +429,7 @@ func (s *Server) handleConversationSettings(w http.ResponseWriter, r *http.Reque
 	case errors.As(err, &invalid):
 		http.Error(w, invalid.Error(), http.StatusBadRequest)
 		return
-	case errors.Is(err, errSettingsUnavailable), errors.Is(err, errAgentWorking):
+	case errors.Is(err, errSettingsUnavailable), errors.Is(err, errAgentWorking), errors.Is(err, db.ErrConflict):
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	case err != nil:
@@ -534,6 +541,9 @@ func (cm *ConversationManager) ApplySettings(ctx context.Context, models []Model
 	// or before the marker.
 	var recordErr error
 	err = cm.resetLoopAfter(true, func() error {
+		if err := cm.checkProjectTurn(ctx); err != nil {
+			return err
+		}
 		if cm.IsAgentWorking() {
 			// A turn started after the cancel; don't kill it unannounced.
 			return errAgentWorking

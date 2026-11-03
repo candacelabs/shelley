@@ -43,6 +43,7 @@
           </svg>
         </Button>
 
+        <ExeBrand v-if="workspaceMode && isDrawerCollapsed" class="show-on-desktop-only" />
         <h1 class="app-bar-title header-title" :title="currentConversation?.slug || 'Shelley'">
           {{ displayTitle }}
         </h1>
@@ -52,12 +53,13 @@
         <!-- Overflow menu (PrimeVue Popover + Select) -->
         <ChatOverflowMenu
           :has-cwd="hasCwd"
-          :show-directory="isMobile"
+          :show-directory="isMobile && !isAssistant"
           :cwd="currentConversation?.cwd || selectedCwd"
           :links="links"
           :can-archive="
-            !!(conversationId && onArchiveConversation && !currentConversation?.archived)
+            !!(conversationId && onArchiveConversation && !currentConversation?.archived && !isAssistant)
           "
+          :archive-note="workspace.archiveNote(conversationId)"
           :can-export="!!(conversationId && messages.length > 0)"
           :has-update="hasUpdate"
           :message-user="messageUserEnabled"
@@ -84,7 +86,6 @@
               :disabled-reason="conversationWorking ? t('modelSwitchBusy') : undefined"
               :refreshing="refreshingModels"
               :knob="knob"
-              append-to-body
               @select-model="
                 conversationLive ? switchConversationModel($event) : setSelectedModel($event)
               "
@@ -102,10 +103,13 @@
               @manage-models="hide(); props.onOpenModelsModal?.()"
               @refresh-models="handleRefreshModels"
             >
-              <template #value="{ label }">
+              <template #value="{ label, badge }">
                 <WorkspaceActionIcon action="model" class="chat-menu-icon" />
                 {{ t("model") }}
                 <span class="overflow-menu-cwd" :title="label">{{ label }}</span>
+                <span v-if="badge" class="model-picker-custom-badge" :title="badge.title">{{
+                  badge.label
+                }}</span>
               </template>
             </ModelPicker>
           </template>
@@ -145,6 +149,17 @@
       </div>
     </div>
 
+    <ProjectHeader
+      :conversation-id="conversationId"
+      :busy="conversationWorking || sending"
+      :archived="!!currentConversation?.archived"
+      :assignable="
+        !!currentConversation?.user_initiated &&
+        !currentConversation.parent_conversation_id &&
+        !currentConversation.external_conversation_id
+      "
+    />
+
     <!-- Messages area -->
     <div class="messages-area-wrapper" :aria-busy="loading">
       <div ref="messagesContainerRef" class="messages-container scrollable">
@@ -152,7 +167,34 @@
           <!-- empty state -->
           <div v-if="conversationOptions.kind !== 'search' && messages.length === 0 && liveExchangeTurns.length === 0" class="empty-state">
             <div class="empty-state-content">
-              <p class="text-base chat-welcome-text">
+              <div v-if="isAssistant && !workspace.hasProjects.value" class="first-project">
+                <h2 class="text-primary">Start with a project</h2>
+                <p class="chat-welcome-text">
+                  A project brings together its GitHub repositories, instructions and VMs. I’ll
+                  start tasks in it whenever you ask for work on it.
+                </p>
+                <button
+                  type="button"
+                  class="first-project-button"
+                  data-testid="first-project-button"
+                  @click="workspace.editProject()"
+                >
+                  <i class="pi pi-folder-plus" aria-hidden="true" />
+                  New Project
+                </button>
+                <p class="text-sm chat-secondary-text">Or just ask me something below.</p>
+              </div>
+              <template v-else-if="isAssistant">
+                <h2 class="text-primary">What would you like to get done?</h2>
+                <p class="chat-welcome-text">
+                  Ask a quick question, or describe a project. I’ll answer here or start a task in
+                  the right project.
+                </p>
+                <p class="text-sm chat-secondary-text">
+                  Projects keep repositories, instructions and actions together.
+                </p>
+              </template>
+              <p v-else class="text-base chat-welcome-text">
                 <template v-for="(part, i) in welcomeParts" :key="i">
                   <strong v-if="part === '{hostname}'">{{ hostname }}</strong>
                   <a
@@ -218,7 +260,7 @@
                 </ul>
                 <p v-if="modelSetupHint.footer">{{ t(modelSetupHint.footer) }}</p>
               </PvMessage>
-              <p v-else-if="voicePhase === 'idle'" class="text-sm chat-secondary-text">
+              <p v-else-if="!isAssistant && voicePhase === 'idle'" class="text-sm chat-secondary-text">
                 {{
                   t(
                     canSendWithModel(selectedModel, readyModelIds, providerIds)
@@ -262,7 +304,6 @@
                 :chunk="chunk"
                 :conversation-id="conversationId"
                 :on-open-diff-viewer="handleOpenDiffViewer"
-                :can-request-tour="canRequestTour"
                 :on-comment-text-change="setDiffCommentText"
                 :on-fork="forkHandler"
               />
@@ -294,6 +335,7 @@
               </div>
             </div>
           </div>
+          <ActionRunsTail :conversation-id="conversationId" :messages="messages" />
           <!-- Durable queued items render in their exact server order. Working
                and failed transcriptions get a specialized card; ready
                transcriptions are ordinary queued user-message ghosts. -->
@@ -408,7 +450,64 @@
       @dismiss="dismissResourceNotice"
     />
 
-    <StatusHookRow :status="hookStatus" :stale="hookStatusStale" />
+    <StatusHookRow :status="hookStatus" :stale="hookStatusStale" @action="handleStatusHookAction">
+      <template #open_models="{ item }">
+        <ModelPicker
+          inline
+          :style="{ color: item.color, backgroundColor: item.bgcolor }"
+          :title="item.title || item.body"
+          :trigger-label="item.body"
+          :models="models"
+          :selected-model="selectedModel"
+          :thinking-level="statusContentProps.thinkingLevel"
+          :disabled="conversationWorking || sending"
+          :disabled-reason="conversationWorking ? t('modelSwitchBusy') : undefined"
+          :refreshing="refreshingModels"
+          :knob="knob"
+          @select-model="
+            conversationLive ? switchConversationModel($event) : setSelectedModel($event)
+          "
+          @select-combination="
+            (model, level) =>
+              conversationLive
+                ? switchConversationCombination(model, level)
+                : setSelectedCombination(model, level)
+          "
+          @thinking-change="
+            conversationLive ? switchConversationThinkingLevel($event) : setThinkingLevel($event)
+          "
+          @manage-models="props.onOpenModelsModal?.()"
+          @refresh-models="handleRefreshModels"
+        />
+      </template>
+    </StatusHookRow>
+
+    <ModelUpgradeBanner
+      v-if="upgradeAllResultShown"
+      :title="upgradeAllResultShown.text"
+      :detail="upgradeAllResultShown.detail"
+      testid="model-upgrade-all-result"
+      @dismiss="upgradeAllResult = null"
+    />
+    <ModelUpgradeBanner
+      v-else-if="upgradeAllOffer && upgradeAllPair"
+      :title="`Switch your other ${upgradeAllPair.fromName} chats too?`"
+      :detail="`${upgradeAllPair.fromName} → ${upgradeAllPair.toName}`"
+      action="Switch all"
+      testid="model-upgrade-all"
+      @action="upgradeAllOthers"
+      @dismiss="dismissUpgradeOffer"
+    />
+    <ModelUpgradeBanner
+      v-else-if="modelUpgrade"
+      :title="upgradeTitle"
+      :detail="`${modelName(modelUpgrade.from)} → ${modelName(modelUpgrade.to)}`"
+      action="Switch"
+      testid="model-upgrade"
+      :busy="agentWorking"
+      @action="offerUpgradeAll"
+      @dismiss="dismissModelUpgrade(modelUpgrade.from.id, modelUpgrade.to.id)"
+    />
 
     <!-- Status bar -->
     <div :class="statusBarClass">
@@ -449,6 +548,12 @@
       :lazy-draft-id="lazyDraftId"
       :model-options="readyModels"
       :current-model-id="selectedModel"
+      :default-model-id="profileDefaultModel"
+      :profiles="
+        agentWorking || currentConversation?.parent_conversation_id
+          ? []
+          : profiles.filter((profile) => !profile.project)
+      "
       :is-child-conversation="!!currentConversation?.parent_conversation_id"
       @clear-injected-text="
         diffCommentText = '';
@@ -535,8 +640,6 @@
       :is-open="showGitGraph"
       :covered="showDiffViewer"
       :can-open-diff="true"
-      :conversation-id="conversationId"
-      :can-request-tour="canRequestTour"
       @close="
         showGitGraph = false;
         focusMessageInputIfUnfocused();
@@ -575,7 +678,6 @@
       :is-open="showDiffViewer"
       :initial-commit="diffViewerInitialCommit"
       :initial-file="diffViewerInitialFile"
-      :open-on-files="diffViewerOpenOnFiles"
       :recording-conversation-id="
         currentConversation && !currentConversation.archived && !currentConversation.is_draft
           ? (conversationId ?? undefined)
@@ -583,7 +685,6 @@
       "
       :start-review-conversation="startReviewConversation"
       :follow-review-conversation="followReviewConversation"
-      :tour-conversation-id="canRequestTour ? (conversationId ?? undefined) : undefined"
       @close="onDiffViewerClose"
       @comment-text-change="(text) => (diffCommentText = text)"
       @cwd-change="(cwd) => (diffViewerCwd = cwd)"
@@ -603,6 +704,11 @@
 </template>
 
 <script setup lang="ts">
+import { provideIframeVersions } from "../composables/iframeVersions";
+import ProjectHeader from "./ProjectHeader.vue";
+import ActionRunsTail from "./ActionRunsTail.vue";
+import { useWorkspace } from "../composables/workspace";
+import { handleModifiedNavClick } from "../utils/openInNewTab";
 import {
   computed,
   inject,
@@ -684,9 +790,10 @@ import { closeMarkdownDoc, useMarkdownDoc } from "../composables/markdownDoc";
 import { isImeComposing } from "../../utils/imeComposing";
 import { focusMessageInput, focusMessageInputIfUnfocused } from "../../utils/focusMessageInput";
 import { buildMessageQuote } from "../../utils/messageQuote";
+import { conversationTitle } from "../../utils/conversationTitle";
 import { hasMultipleUsers } from "../../utils/messageAuthors";
 import { tildifyPath } from "../../utils/tildify";
-import { handleModifiedNavClick } from "../utils/openInNewTab";
+import { prettyModelName } from "../../utils/modelNames";
 import { formatDay } from "../../utils/messageTime";
 import {
   clearConversationViewCache,
@@ -698,15 +805,6 @@ import {
 } from "../../utils/conversationView";
 import { SLASH_COMMANDS } from "../../utils/slashCommands";
 import { replaceLocationFragment } from "../../utils/locationFragment";
-import {
-  announceCommitTourRequest,
-  applyCommitTourStatus,
-  commitTourStatusKey,
-  loadCommitTourStatus,
-  subscribeCommitTourRequests,
-  subscribeCommitTourStatus,
-  type CommitTourRequest,
-} from "../../services/commitTourStatus";
 import {
   btwAnchor,
   btwExchangesByAnchor,
@@ -770,6 +868,8 @@ import AgentsMdEditorModal from "./AgentsMdEditorModal.vue";
 import TerminalPanel from "./TerminalPanel.vue";
 import VersionChecker from "./VersionChecker.vue";
 import ChatOverflowMenu from "./ChatOverflowMenu.vue";
+import ExeBrand from "./ExeBrand.vue";
+import { workspaceMode } from "../../utils/workspaceMode";
 import LiveVoice from "./LiveVoice.vue";
 import LiveExchange from "./LiveExchange.vue";
 import type { LiveCallDestination } from "../composables/liveCallConversation";
@@ -788,10 +888,12 @@ import { useStatusBar } from "../composables/statusBar";
 import TranscriptionTask from "./TranscriptionTask.vue";
 import ChatStatusContent from "./ChatStatusContent.vue";
 import StatusHookRow from "./StatusHookRow.vue";
+import type { StatusBarItem } from "../../services/api";
 import MarkdownContent from "./MarkdownContent.vue";
 import InlineText from "./InlineText.vue";
 import ThinkingContent from "./tools/ThinkingContent.vue";
 import ResourceNotice from "./ResourceNotice.vue";
+import ModelUpgradeBanner from "./ModelUpgradeBanner.vue";
 
 // Props mirror ChatInterfaceProps in the React source. Callbacks that
 // ChatInterface awaits or simply invokes are passed as function props
@@ -805,6 +907,8 @@ const props = withDefaults(
     onResourceStatus?: (status: ResourceStatus) => void;
     onOpenDrawer: () => void;
     onNewConversation: () => Promise<boolean>;
+    onNewProjectConversation?: () => void;
+    isAssistant?: boolean;
     onSelectConversation?: (conversation: Conversation) => void;
     onArchiveConversation?: (conversationId: string) => Promise<void>;
     currentConversation?: Conversation;
@@ -859,6 +963,7 @@ const props = withDefaults(
     reconnectNonce: 0,
   },
 );
+const workspace = useWorkspace();
 
 const { t } = useI18n();
 const conversations = inject(ConversationsListKey);
@@ -983,15 +1088,6 @@ const lastMessageId = computed(() => {
 });
 provide("lastMessageId", lastMessageId);
 
-// Tours are built by subagents, which only started top-level conversations
-// can spawn (server/commit_tour_request.go).
-const canRequestTour = computed(
-  () =>
-    !!props.currentConversation &&
-    !props.currentConversation.parent_conversation_id &&
-    !props.currentConversation.is_draft,
-);
-
 // When more than one distinct human user (by exe.dev email) has participated in
 // a conversation, descendant Message components show each user message's author
 // email. Empty-string emails are ignored (unauthenticated/direct access), so a
@@ -1002,6 +1098,9 @@ const showUserEmails = computed(() => {
   return hasMultipleUsers(messages.value);
 });
 provide("showUserEmails", showUserEmails);
+// Only the workspace Assistant receives texted messages; web chats' messages
+// also carry external ids.
+provide("isAssistantConversation", computed(() => !!props.isAssistant));
 const loading = ref(true);
 // Run the status-bar hook once the conversation has loaded and after every
 // message. Not for drafts or archived conversations.
@@ -1011,8 +1110,34 @@ const { status: hookStatus, stale: hookStatusStale } = useStatusBar(
       ? null
       : props.conversationId,
   () => !loading.value,
-  [() => messages.value.at(-1)?.sequence_id],
+  [() => messages.value.at(-1)?.sequence_id, () => props.currentConversation?.model],
 );
+function handleStatusHookAction(item: StatusBarItem) {
+  switch (item.action) {
+    case "open_files":
+      props.onOpenFileFinder?.();
+      break;
+    case "open_mcp":
+      props.onOpenMcpServersModal?.();
+      break;
+    case "open_commands":
+      props.onOpenCommandPalette?.();
+      break;
+    case "open_diff":
+      if (item.args?.commit) handleOpenDiffViewer(item.args.commit);
+      else showDiffViewer.value = true;
+      break;
+    case "open_terminal":
+      focusOrOpenTerminal();
+      break;
+    case "open_git":
+      showGitGraph.value = true;
+      break;
+    case "open_directory":
+      showDirectoryPicker.value = true;
+      break;
+  }
+}
 const renderingConversation = ref(false);
 const showLoadingProgressUI = ref(false);
 const loadingProgress = ref<{
@@ -1044,6 +1169,7 @@ const readyModelIds = computed(() => models.value.filter((m) => m.ready).map((m)
 // Ready models with reasoning capabilities, for the same autocomplete to offer
 // only levels the target model accepts.
 const readyModels = computed(() => models.value.filter((m) => m.ready));
+const profileDefaultModel = computed(() => serverDefaultModel() || pickReadyModel(models.value));
 
 // Copy for the empty-model-list state. The server tells us WHY the list is
 // empty (missing exe.dev reflection/llm integration, or not on exe.dev at
@@ -1152,9 +1278,11 @@ async function updateConversationSettings(change: SettingsChange) {
 type QueuedChange = SettingsChange | ((s: Settings) => SettingsChange | null);
 let settingsQueue = Promise.resolve<{ id: string; settings: ConversationSettings } | null>(null);
 let settingsQueued = 0;
-function changeConversationSettings(change: QueuedChange) {
+// Resolves true once this change is accepted by the server.
+function changeConversationSettings(change: QueuedChange): Promise<boolean> {
   const id = props.conversationId;
-  if (!id) return;
+  if (!id) return Promise.resolve(false);
+  let accepted = false;
   settingsQueued++;
   settingsQueue = settingsQueue.then(async (prior) => {
     let left = prior?.id === id ? prior : null;
@@ -1166,7 +1294,10 @@ function changeConversationSettings(change: QueuedChange) {
           : props.conversationId === id
             ? change(left?.settings ?? settingsInEffect.value.settings)
             : null;
-      if (c) left = { id, settings: await api.updateConversationSettings(id, c) };
+      if (c) {
+        left = { id, settings: await api.updateConversationSettings(id, c) };
+        accepted = true;
+      }
     } catch (err) {
       error.value = err instanceof Error ? err.message : "Failed to change settings";
       left = null;
@@ -1174,6 +1305,7 @@ function changeConversationSettings(change: QueuedChange) {
     // Once the queue empties, the conversation shows what's in effect.
     return --settingsQueued ? left : null;
   });
+  return settingsQueue.then(() => accepted);
 }
 
 // The open conversation's reasoning level, as the pills name it.
@@ -1181,10 +1313,123 @@ function conversationLevel(): ThinkingLevel {
   return (settingsInEffect.value.settings.thinking_level || "default") as ThinkingLevel;
 }
 
-function switchConversationModel(model: string) {
-  if (model === settingsInEffect.value.settings.model) return;
+// Prefer a name the user set; otherwise prettify, so long ids like
+// "deepseek-v4.1-flash-1017-fireworks" read as "DeepSeek V4.1 Flash 1017".
+function modelName(m: Model): string {
+  return m.display_name && m.display_name !== m.id ? m.display_name : prettyModelName(m.id);
+}
+
+const upgradeTitle = computed(() => {
+  const u = modelUpgrade.value?.from.upgrade;
+  return u?.kind === "generation"
+    ? `New ${u.line} generation available`
+    : `Newer version of ${u?.line} available`;
+});
+
+const modelUpgrade = computed(() => {
+  if (
+    loading.value ||
+    props.currentConversation?.archived ||
+    props.currentConversation?.parent_conversation_id
+  ) {
+    return null;
+  }
+  const from = models.value.find((m) => m.id === settingsInEffect.value.settings.model);
+  const to = models.value.find((m) => m.id === from?.upgrade?.to);
+  if (!from || !to) return null;
+  return { from, to };
+});
+
+const upgradeAllDone = ref(!!window.__SHELLEY_INIT__?.model_upgrade_prompt_done);
+// The switch just made, to repeat on other chats. Held in a ref because the
+// upgrade itself is gone once the switch lands.
+const upgradeAllPair = ref<{
+  conversationId: string;
+  from: string;
+  to: string;
+  fromName: string;
+  toName: string;
+} | null>(null);
+// What the offer did, shown in the chat it was taken from.
+const upgradeAllResult = ref<{ conversationId: string; text: string; detail?: string } | null>(
+  null,
+);
+const upgradeAllResultShown = computed(() =>
+  upgradeAllResult.value?.conversationId === props.conversationId ? upgradeAllResult.value : null,
+);
+// Offered once ever, in the chat just switched once the server accepted it,
+// and only when some other chat is still on the old model.
+const upgradeAllOffer = computed(() => {
+  const pair = upgradeAllPair.value;
+  return (
+    !upgradeAllDone.value &&
+    !!pair &&
+    pair.conversationId === props.conversationId &&
+    conversations.value.some(
+      (c) => c.model === pair.from && c.conversation_id !== props.conversationId && !c.archived,
+    )
+  );
+});
+
+async function offerUpgradeAll() {
+  const upgrade = modelUpgrade.value!;
+  if (!conversationLive.value) {
+    setSelectedModel(upgrade.to.id);
+    return;
+  }
+  const conversationId = props.conversationId!;
+  if (!(await switchConversationModel(upgrade.to.id))) return;
+  upgradeAllPair.value = {
+    conversationId,
+    from: upgrade.from.id,
+    to: upgrade.to.id,
+    fromName: modelName(upgrade.from),
+    toName: modelName(upgrade.to),
+  };
+}
+
+async function upgradeAllOthers() {
+  const { conversationId, from, to, fromName, toName } = upgradeAllPair.value!;
+  try {
+    const { upgraded: n, skipped } = await api.upgradeAllModels(from, to);
+    upgradeAllDone.value = true;
+    const chats = (k: number) => `${k} ${k === 1 ? "chat" : "chats"}`;
+    upgradeAllResult.value = {
+      conversationId,
+      text: n
+        ? `✓ Switched ${chats(n)} from ${fromName} to ${toName}`
+        : `No other ${fromName} chats switched`,
+      // Switching would stop their turn, so they keep the old model.
+      detail: skipped ? `Skipped ${chats(skipped)} still running` : undefined,
+    };
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : "Failed to upgrade other conversations";
+  }
+}
+
+async function dismissUpgradeOffer() {
+  upgradeAllDone.value = true;
+  try {
+    await api.dismissUpgradePrompt();
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : "Failed to record the answer";
+  }
+}
+
+async function dismissModelUpgrade(from: string, to: string) {
+  try {
+    await api.dismissModelUpgrade(from, to);
+    models.value = await api.getModels();
+    if (window.__SHELLEY_INIT__) window.__SHELLEY_INIT__.models = models.value;
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : "Failed to dismiss upgrade";
+  }
+}
+
+function switchConversationModel(model: string): Promise<boolean> {
+  if (model === settingsInEffect.value.settings.model) return Promise.resolve(false);
   // The server rounds the reasoning level to one the model has.
-  changeConversationSettings({ model });
+  return changeConversationSettings({ model });
 }
 
 function switchConversationCombination(
@@ -1305,7 +1550,6 @@ const showAgentsMdEditor = ref(false);
 const diffViewerInitialCommit = ref<string | undefined>(undefined);
 const diffViewerCwd = ref<string | undefined>(undefined);
 const diffViewerInitialFile = ref<string | undefined>(undefined);
-const diffViewerOpenOnFiles = ref(false);
 const diffCommentText = ref("");
 // The image being annotated, if any (module state so any image in the message
 // tree can open the view without prop drilling).
@@ -1326,6 +1570,7 @@ const toolProgress = ref<Record<string, ToolProgress>>({});
 // only the running tool's component instead of re-rendering every message
 // via a changed prop identity (see composables/toolProgress.ts).
 provideToolProgress(toolProgress);
+provideIframeVersions(messages);
 const streamingText = ref("");
 const streamingThinking = ref("");
 const showToolsModal = ref(false);
@@ -1922,8 +2167,10 @@ const knob = computed<SettingsKnob>(() => {
   const { profile, settings } = settingsInEffect.value;
   const noTools = conversationNoTools.value;
   const p = profiles.value.find((candidate) => candidate.name === profile);
+  const inProject = !!p?.project && conversationLive.value;
   return {
-    profiles: profiles.value,
+    profiles: inProject ? [p] : profiles.value.filter((candidate) => !candidate.project),
+    inProject,
     profile,
     changes: p ? settingsDifferences(p, settings, models.value, availableTools.value) : [],
     // Auto compaction has its own section.
@@ -2253,7 +2500,9 @@ const contextNudgesOn = computed(
 );
 
 const displayTitle = computed(() => {
-  const title = props.currentConversation?.slug || "Shelley";
+  if (props.isAssistant) return "Assistant";
+  const slug = props.currentConversation?.slug;
+  const title = slug ? conversationTitle(slug) : "Shelley";
   if (props.currentConversation?.archived) return `${title} (archived)`;
   return title;
 });
@@ -2274,7 +2523,6 @@ const allCoalescedItems = computed(() =>
     coalesceMessages(
       messages.value,
       conversationInterrupted.value ? props.currentConversation?.current_generation : undefined,
-      buildingTours.value,
     ),
   )(),
 );
@@ -3653,14 +3901,11 @@ async function sendMessage(message: string, skills: string[] = []) {
   const transcriptionCommand =
     trimmedMessage === SLASH_COMMANDS.TRANSCRIPTION.command ||
     trimmedMessage.startsWith(`${SLASH_COMMANDS.TRANSCRIPTION.command} `);
-  const tourCommand =
-    trimmedMessage === SLASH_COMMANDS.TOUR.command ||
-    trimmedMessage.startsWith(`${SLASH_COMMANDS.TOUR.command} `);
   const dispatch = composerDispatch(message, {
     isChildConversation: !!props.currentConversation?.parent_conversation_id,
   });
   rejectSkillsOnCommand(trimmedMessage, skills);
-  if (dispatch.route === "queue" && !transcriptionCommand && !tourCommand) {
+  if (dispatch.route === "queue" && !transcriptionCommand) {
     await queueMessage(trimmedMessage, skills);
     return;
   }
@@ -3726,46 +3971,6 @@ async function sendMessage(message: string, skills: string[] = []) {
     } catch (err) {
       error.value = err instanceof Error ? err.message : "Failed to start BTW";
       throw err;
-    }
-    return;
-  }
-
-  if (tourCommand) {
-    if (!props.conversationId || props.currentConversation?.is_draft) {
-      const err = new Error("Start a conversation before requesting a tour.");
-      error.value = err.message;
-      throw err;
-    }
-    if (props.currentConversation?.parent_conversation_id) {
-      const err = new Error("Commit tours can only be requested from top-level conversations.");
-      error.value = err.message;
-      throw err;
-    }
-    try {
-      sending.value = true;
-      error.value = null;
-      const accepted = await api.sendMessage(props.conversationId, {
-        message: trimmedMessage,
-        model: selectedModel.value,
-      });
-      const cwd =
-        trimmedMessage.split("\n")[1]?.trim() ||
-        props.currentConversation?.cwd ||
-        selectedCwd.value;
-      if (accepted.tour && cwd) {
-        applyCommitTourStatus(cwd, accepted.tour.hash, accepted.tour);
-        if (accepted.tour.status === "present") {
-          handleOpenDiffViewer(accepted.tour.hash, cwd);
-        } else if (accepted.tour.status === "building") {
-          announceCommitTourRequest(cwd, accepted.tour.hash);
-        }
-      }
-    } catch (err) {
-      console.error("Failed to run /tour:", err);
-      error.value = err instanceof Error ? err.message : "Failed to request tour";
-      throw err;
-    } finally {
-      sending.value = false;
     }
     return;
   }
@@ -4038,54 +4243,10 @@ async function handleUnarchive() {
   }
 }
 
-function handleOpenDiffViewer(commit: string, cwd?: string, openOnFiles = false) {
+function handleOpenDiffViewer(commit: string, cwd?: string) {
   diffViewerInitialCommit.value = commit;
-  diffViewerOpenOnFiles.value = openOnFiles;
   diffViewerCwd.value = cwd;
   showDiffViewer.value = true;
-}
-
-// Tours requested from this tab are watched until they settle so chat keeps their rows visible.
-const activeTourRequests = new Map<string, () => void>();
-const buildingTours = ref<ReadonlySet<string>>(new Set());
-let unsubscribeTourRequests: (() => void) | null = null;
-function setTourBuilding(hash: string, building: boolean) {
-  if (buildingTours.value.has(hash) === building) return;
-  const next = new Set(buildingTours.value);
-  if (building) next.add(hash);
-  else next.delete(hash);
-  buildingTours.value = next;
-}
-function watchRequestedTour({ cwd, hash }: CommitTourRequest) {
-  const key = commitTourStatusKey(cwd, hash);
-  if (activeTourRequests.has(key)) return;
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  let unsubscribe = () => {};
-  let stopped = false;
-  const stop = () => {
-    stopped = true;
-    if (timer) clearTimeout(timer);
-    unsubscribe();
-    activeTourRequests.delete(key);
-  };
-  activeTourRequests.set(key, stop);
-  unsubscribe = subscribeCommitTourStatus(cwd, hash, (status) => {
-    setTourBuilding(hash, status.status === "building");
-    if (status.status === "building") return;
-    stop();
-  });
-  // A cached settled status is replayed during subscribe, before unsubscribe is assigned.
-  if (stopped) unsubscribe();
-  const poll = async () => {
-    try {
-      await loadCommitTourStatus(cwd, hash, true);
-    } catch (error) {
-      console.error("Failed to check commit tour:", error);
-    } finally {
-      if (activeTourRequests.has(key)) timer = setTimeout(() => void poll(), 2_000);
-    }
-  };
-  if (activeTourRequests.has(key)) timer = setTimeout(() => void poll(), 2_000);
 }
 
 function handleMessageComment(messageId: string, snippet: string) {
@@ -4144,7 +4305,7 @@ function openExport() {
   window.open(`export/${props.conversationId}`, "_blank", "noopener");
 }
 async function archiveFromMenu() {
-  if (!props.conversationId || !props.onArchiveConversation) return;
+  if (!props.conversationId || !props.onArchiveConversation || props.isAssistant) return;
   try {
     await props.onArchiveConversation(props.conversationId);
   } catch (err) {
@@ -4191,7 +4352,8 @@ function handleMenuShortcut(e: KeyboardEvent) {
       if (
         !props.conversationId ||
         !props.onArchiveConversation ||
-        props.currentConversation?.archived
+        props.currentConversation?.archived ||
+        props.isAssistant
       )
         return;
       void archiveFromMenu();
@@ -4211,6 +4373,10 @@ function handleMenuShortcut(e: KeyboardEvent) {
 }
 
 function onNewConversationClick(e: MouseEvent) {
+  if (props.onNewProjectConversation) {
+    props.onNewProjectConversation();
+    return;
+  }
   if (handleModifiedNavClick(e, "new")) return;
   props.onNewConversation();
 }
@@ -4427,7 +4593,6 @@ function onDiffViewerClose() {
   showDiffViewer.value = false;
   diffViewerInitialCommit.value = undefined;
   diffViewerInitialFile.value = undefined;
-  diffViewerOpenOnFiles.value = false;
   diffViewerCwd.value = undefined;
   if (!showGitGraph.value) focusMessageInputIfUnfocused();
 }
@@ -4473,7 +4638,8 @@ const statusContentProps = computed(() => {
     usageEntries: usageEntries.value,
     otherUsageRows: otherUsageRows.value,
     messages: messages.value,
-    hostname,
+    // A conversation on a VM runs its tools there.
+    hostname: workspace.vmFor(props.conversationId)?.vm_name ?? hostname,
     models: models.value,
     selectedModel: selectedModel.value,
     sending: sending.value,
@@ -4482,6 +4648,7 @@ const statusContentProps = computed(() => {
     thinkingLevel: conversationLive.value ? conversationLevel() : thinkingLevel.value,
     knob: knob.value,
     cwdError: cwdError.value,
+    isAssistant: props.isAssistant,
     onUnarchive: handleUnarchive,
     onClearError: () => (error.value = null),
     onCancel: handleCancel,
@@ -5671,13 +5838,11 @@ onMounted(() => {
     const cwdParam = params.get("cwd") || undefined;
     diffViewerInitialCommit.value = commit;
     diffViewerInitialFile.value = params.get("file") || undefined;
-    diffViewerOpenOnFiles.value = params.get("view") === "files";
     diffViewerCwd.value = cwdParam;
     showDiffViewer.value = true;
     params.delete("diff");
     params.delete("cwd");
     params.delete("file");
-    params.delete("view");
     const qs = params.toString();
     window.history.replaceState(
       {},
@@ -5693,12 +5858,9 @@ onMounted(() => {
   document.addEventListener("keydown", handleScrollKeyDown);
   document.addEventListener("keydown", handleTerminalShortcut, true);
   document.addEventListener("keydown", handleMenuShortcut);
-  unsubscribeTourRequests = subscribeCommitTourRequests(watchRequestedTour);
 });
 
 onUnmounted(() => {
-  unsubscribeTourRequests?.();
-  for (const stop of activeTourRequests.values()) stop();
   teardownSubscriptions();
   stopBottomPin();
   tailSweepToken++; // cancel any in-flight background mount sweep

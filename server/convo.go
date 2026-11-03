@@ -39,7 +39,7 @@ const (
 	roleSubagent
 	// roleBtwReader is a /btw side discussion of its parent.
 	roleBtwReader
-	// roleWorker is an internal child such as a commit tour.
+	// roleWorker is an internal child such as a transcription worker.
 	roleWorker
 )
 
@@ -96,9 +96,17 @@ type ConversationManager struct {
 	recordTurnStartMessage turnStartRecordFunc
 	logger                 *slog.Logger
 	toolSetConfig          claudetool.ToolSetConfig
-	integrationSkills      *integrationSkillCache
-	listIntegrations       integrationLister
-	toolSet                *claudetool.ToolSet // created per-conversation when loop starts
+	// prepareConversationVM starts preparing the VM of a VM conversation (or a
+	// subagent's parent) at each turn; see Server.prepareConversationVM.
+	prepareConversationVM func()
+	integrationSkills     *integrationSkillCache
+	listIntegrations      integrationLister
+	toolSet               *claudetool.ToolSet // created per-conversation when loop starts
+	turnToolConfig        claudetool.ToolSetConfig
+	profileMention        func(context.Context, string) (*Profile, error)
+	profileModelService   func(string) (llm.Service, error)
+	deferUserMessage      func(context.Context, string, llm.Message) error
+	profileTurn           bool // guarded by mu; the current turn has an override
 
 	subpub *subpub.SubPub[StreamResponse]
 	// streamPub mirrors per-conversation events to the server-wide /api/stream2
@@ -450,6 +458,21 @@ func (cm *ConversationManager) IsAgentWorking() bool {
 	return cm.agentWorking
 }
 
+// tokenCounter estimates tokens for this conversation's model.
+func (cm *ConversationManager) tokenCounter() tokenCounter {
+	return tokenCounterFor(cm.GetModel())
+}
+
+// tools returns the tool definitions of the running loop, if any.
+func (cm *ConversationManager) tools() []*llm.Tool {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if cm.toolSet == nil {
+		return nil
+	}
+	return cm.toolSet.Tools()
+}
+
 // GetModel returns the model ID used by this conversation.
 func (cm *ConversationManager) GetModel() string {
 	cm.mu.Lock()
@@ -589,6 +612,9 @@ func (cm *ConversationManager) acceptUserMessage(ctx context.Context, service ll
 	cm.loopLifecycleMu.Lock()
 	defer cm.loopLifecycleMu.Unlock()
 	cm.waitForLoopTeardownLocked()
+	if err := cm.checkProjectTurn(ctx); err != nil {
+		return false, "", err
+	}
 
 	if err := cm.Hydrate(ctx); err != nil {
 		return false, "", err
@@ -600,16 +626,34 @@ func (cm *ConversationManager) acceptUserMessage(ctx context.Context, service ll
 	if _, err := cm.recordInterruptedToolResults(ctx); err != nil {
 		return false, "", fmt.Errorf("failed to record interrupted tool results: %w", err)
 	}
+	userData, err := marshalTurnUserData(ctx)
+	if err != nil {
+		return false, "", err
+	}
 	if err := cm.ensureLoopLocked(service, modelID); err != nil {
+		return false, "", err
+	}
+	run, err := cm.prepareProfileTurn(ctx, message, userData)
+	if err != nil {
+		if !hadLoop {
+			cm.mu.Lock()
+			loopInstance := cm.loop
+			cm.mu.Unlock()
+			cm.discardUnstartedLoopLocked(loopInstance)
+		}
 		return false, "", err
 	}
 
 	cm.mu.Lock()
 	isFirst := !cm.hasConversationEvents
 	wasWorking := cm.agentWorking
+	isolated := cm.profileTurn
 	loopInstance := cm.loop
 	recordTurnStart := cm.recordTurnStartMessage
 	cm.mu.Unlock()
+	if wasWorking && (isolated || run != nil) {
+		return false, "", cm.deferUserMessage(ctx, modelID, message)
+	}
 
 	if loopInstance == nil {
 		return false, "", fmt.Errorf("conversation loop not initialized")
@@ -621,7 +665,7 @@ func (cm *ConversationManager) acceptUserMessage(ctx context.Context, service ll
 		return false, "", fmt.Errorf("turn-start recorder not configured")
 	}
 
-	modelMessage, err := messageWithContextSenderProvenance(ctx, message)
+	modelMessage, err := messageWithSenderProvenance(message, userData)
 	if err != nil {
 		if !hadLoop {
 			cm.discardUnstartedLoopLocked(loopInstance)
@@ -662,9 +706,10 @@ func (cm *ConversationManager) acceptUserMessage(ctx context.Context, service ll
 
 	cm.mu.Lock()
 	cm.hasConversationEvents = true
+	cm.profileTurn = run != nil
 	cm.lastActivity = time.Now()
 	cm.mu.Unlock()
-	loopInstance.QueueUserMessage(modelMessage)
+	loopInstance.QueueTurn(modelMessage, run)
 
 	return isFirst, created.MessageID, nil
 }
@@ -685,10 +730,10 @@ func (cm *ConversationManager) rejectTurnStart(keepWorking bool) {
 	}
 }
 
-// discardUnstartedLoopLocked removes a loop created for a turn whose user row
-// could not be persisted. Leaving it installed makes CancelConversation treat
-// the rejected turn as active and append a bogus cancellation marker. The
-// caller holds loopLifecycleMu; this returns with it held again.
+// discardUnstartedLoopLocked removes a loop created for a turn that never
+// started. Leaving it installed makes CancelConversation treat the rejected
+// turn as active and append a bogus cancellation marker. The caller holds
+// loopLifecycleMu; this returns with it held again.
 func (cm *ConversationManager) discardUnstartedLoopLocked(expected *loop.Loop) {
 	cm.mu.Lock()
 	if cm.loop != expected {
@@ -728,6 +773,9 @@ func (cm *ConversationManager) RetryLastLLMRequest(ctx context.Context) error {
 	cm.loopLifecycleMu.Lock()
 	defer cm.loopLifecycleMu.Unlock()
 	cm.waitForLoopTeardownLocked()
+	if err := cm.checkProjectTurn(ctx); err != nil {
+		return err
+	}
 
 	cm.mu.Lock()
 	loopInstance := cm.loop
@@ -764,6 +812,9 @@ func (cm *ConversationManager) RetryLastLLMRequest(ctx context.Context) error {
 	}
 	if retryable, _ := ud["retryable"].(bool); !retryable {
 		return errRetryNotApplicable
+	}
+	if err := cm.checkProfileResume(ctx, latest.SequenceID); err != nil {
+		return err
 	}
 
 	// Dedupe double-clicks: if we already kicked off a retry for THIS bottom
@@ -864,6 +915,9 @@ func (cm *ConversationManager) ContinueAfterRefusal(ctx context.Context, models 
 	cm.loopLifecycleMu.Lock()
 	defer cm.loopLifecycleMu.Unlock()
 	cm.waitForLoopTeardownLocked()
+	if err := cm.checkProjectTurn(ctx); err != nil {
+		return err
+	}
 	// Turns start under this lock, so none starts from here on, but one may
 	// have started, or even run, since the checks above (a queued message
 	// draining, say). Continuing would then re-fire a request beside it, or
@@ -875,6 +929,12 @@ func (cm *ConversationManager) ContinueAfterRefusal(ctx context.Context, models 
 		return fmt.Errorf("failed to load messages since the refusal: %w", err)
 	} else if ran {
 		return errNotRefusal
+	}
+	cm.mu.Lock()
+	profileTurn, previousLoop := cm.profileTurn, cm.loop
+	cm.mu.Unlock()
+	if profileTurn {
+		cm.discardUnstartedLoopLocked(previousLoop)
 	}
 	if err := cm.Hydrate(ctx); err != nil {
 		return fmt.Errorf("failed to hydrate before continuing: %w", err)
@@ -998,6 +1058,9 @@ func (cm *ConversationManager) resumeInterruptedTurn(ctx context.Context, valida
 	cm.loopLifecycleMu.Lock()
 	defer cm.loopLifecycleMu.Unlock()
 	cm.waitForLoopTeardownLocked()
+	if err := cm.checkProjectTurn(ctx); err != nil {
+		return err
+	}
 	if validation == interruptedResumeWorking {
 		defer func() {
 			if returnErr == nil || errors.Is(returnErr, errInterruptedTurnNotApplicable) {
@@ -1010,6 +1073,7 @@ func (cm *ConversationManager) resumeInterruptedTurn(ctx context.Context, valida
 	}
 
 	var resumedErrorMessageID string
+	var resumedErrorSequenceID int64
 	switch validation {
 	case interruptedResumeWorking:
 		latest, err := cm.db.GetLatestActionableMessage(ctx, cm.conversationID)
@@ -1024,6 +1088,7 @@ func (cm *ConversationManager) resumeInterruptedTurn(ctx context.Context, valida
 				return errInterruptedTurnNotApplicable
 			}
 			resumedErrorMessageID = latest.MessageID
+			resumedErrorSequenceID = latest.SequenceID
 		}
 		claimed, err := cm.db.ClaimUpgradeInterruptedTurn(ctx, *upgradeResume)
 		if err != nil {
@@ -1049,9 +1114,13 @@ func (cm *ConversationManager) resumeInterruptedTurn(ctx context.Context, valida
 		}
 		if latest.Type == string(db.MessageTypeError) {
 			resumedErrorMessageID = latest.MessageID
+			resumedErrorSequenceID = latest.SequenceID
 		}
 	}
 
+	if err := cm.checkProfileResume(ctx, resumedErrorSequenceID); err != nil {
+		return err
+	}
 	if err := cm.Hydrate(ctx); err != nil {
 		return fmt.Errorf("failed to hydrate before resuming: %w", err)
 	}
@@ -1246,6 +1315,10 @@ func (cm *ConversationManager) queueMessage(ctx context.Context, s *Server, mode
 	cm.loopLifecycleMu.Lock()
 	defer cm.loopLifecycleMu.Unlock()
 	cm.waitForLoopTeardownLocked()
+	return cm.queueMessageLocked(ctx, s, modelID, message, midTurn)
+}
+
+func (cm *ConversationManager) queueMessageLocked(ctx context.Context, s *Server, modelID string, message llm.Message, midTurn bool) error {
 	// A subagent report must not slip between Stop's initial check and its
 	// queue clear. Stop raises this fence before taking the same lifecycle
 	// lock; whichever obtains it first determines whether the report lands
@@ -1325,6 +1398,7 @@ func (cm *ConversationManager) takeInjectable(ctx context.Context, generation ui
 	stale := cm.loopTearingDown || cm.loop == nil || cm.loopGeneration != generation ||
 		cm.cancelling || cm.changingSettings
 	compacted := !stale && cm.compactedGeneration == generation
+	profileTurn := cm.profileTurn
 	if compacted {
 		cm.compactedGeneration = 0
 	}
@@ -1362,15 +1436,32 @@ func (cm *ConversationManager) takeInjectable(ctx context.Context, generation ui
 		cm.logger.Error("Failed to read queued messages for injection", "error", err)
 		queued = nil
 	}
+	mentionPending := false
 	for _, qm := range queued {
-		// A transcription is delivered as soon as it is ready. Until then it
-		// holds everything sent after it, as the turn-end drain does.
+		// An unfinished transcription holds everything sent after it.
 		if qm.Kind == db.QueuedMessageKindTranscription {
 			if qm.State != db.QueuedMessageStateReady {
 				break
 			}
 		} else if !qm.Inject {
 			continue
+		}
+		if cm.profileMention != nil {
+			var user llm.Message
+			if err := json.Unmarshal(qm.Llm, &user); err != nil {
+				return inj, err
+			}
+			if typedUserForLLM(user, qm.UserData) {
+				if profileTurn || mentionPending {
+					continue
+				}
+				profile, err := cm.profileMention(ctx, messageText(user))
+				// Resolve mentioned settings at their own turn boundary.
+				if err != nil || profile != nil {
+					mentionPending = true
+					continue
+				}
+			}
 		}
 		_, fed, err := cm.recordQueued(ctx, qm)
 		switch {
@@ -1385,7 +1476,7 @@ func (cm *ConversationManager) takeInjectable(ctx context.Context, generation ui
 	}
 	// Right after a compaction the nudger only knows the size from before
 	// it; the next response reports the new one.
-	if nudger != nil && !compacted {
+	if nudger != nil && !compacted && !profileTurn {
 		if size, ok := nudger.take(); ok {
 			nudge, err := cm.recordContextNudge(ctx, size)
 			if err != nil {
@@ -1475,9 +1566,10 @@ func messageText(message llm.Message) string {
 // sequence_id, so a client that never sees it observes a hole and throws away
 // its cached history. It is published even when slug assignment failed, since
 // the row exists regardless. Empty source text (a message with no text blocks)
-// is skipped: there is nothing to name the conversation after.
+// is skipped: there is nothing to name the conversation after. So is the
+// workspace Assistant, which is titled "Assistant" (db.AssistantSlug).
 func (s *Server) generateSlugAsync(conversationID, source, modelID string) {
-	if source == "" {
+	if source == "" || s.isAssistant(conversationID) {
 		return
 	}
 	go func() {
@@ -1569,7 +1661,7 @@ func (cm *ConversationManager) drainPendingMessagesOwned(s *Server) {
 		// Never feed the loop while ApplySettings holds the queue; it drains
 		// again when it is done.
 		cm.mu.Lock()
-		held := cm.changingSettings
+		held := cm.changingSettings || cm.agentWorking
 		cm.mu.Unlock()
 		if held {
 			return
@@ -1605,6 +1697,9 @@ func (cm *ConversationManager) drainPendingMessagesOwned(s *Server) {
 // starting one from the DB if none is running. It stops at the first item that
 // fails so later items never overtake it. The caller holds loopLifecycleMu.
 func (cm *ConversationManager) feedQueued(ctx context.Context, s *Server, queued []db.QueuedMessage) error {
+	if err := cm.checkProjectTurn(ctx); err != nil {
+		return err
+	}
 	cm.mu.Lock()
 	loopInstance := cm.loop
 	warmModelID := cm.modelID
@@ -1663,8 +1758,27 @@ func (cm *ConversationManager) feedQueued(ctx context.Context, s *Server, queued
 	// Hand the loop every recorded message at once, so its next request
 	// includes them all rather than starting on the first.
 	var messages []llm.Message
-	defer func() { loopInstance.QueueMessages(messages...) }()
+	var runner loop.TurnRunner
+	defer func() {
+		if runner != nil {
+			loopInstance.QueueTurn(messages[0], runner)
+		} else {
+			loopInstance.QueueMessages(messages...)
+		}
+	}()
 	for _, qm := range queued {
+		var raw llm.Message
+		if err := json.Unmarshal(qm.Llm, &raw); err != nil {
+			return err
+		}
+		run, err := cm.prepareProfileTurn(ctx, raw, qm.UserData)
+		if err != nil {
+			warning := fmt.Sprintf("Queued message could not start: %v. Fix its profile or cancel the queued message to continue.", err)
+			return errors.Join(err, cm.recordWarning(ctx, warning))
+		}
+		if len(messages) > 0 && run != nil {
+			break
+		}
 		user, message, err := cm.recordQueued(ctx, qm)
 		if errors.Is(err, db.ErrQueuedMessageNotFound) {
 			cm.logger.Info("Skipping cancelled queued message", "queued_id", qm.ID)
@@ -1679,11 +1793,33 @@ func (cm *ConversationManager) feedQueued(ctx context.Context, s *Server, queued
 		// notifySubscribers (fired by the record) already carried the cleaned
 		// array, so the ghost clears live.
 		messages = append(messages, message)
+		cm.mu.Lock()
+		cm.profileTurn = run != nil
+		cm.mu.Unlock()
+		if run != nil {
+			runner = run
+			break
+		}
 	}
 	return nil
 }
 
 const maxConsecutiveWarnings = 3
+
+func (cm *ConversationManager) recordRoutingWarning(ctx context.Context, notice loop.RoutingNotice) error {
+	message, err := cm.db.CreateMessage(ctx, db.CreateMessageParams{
+		ConversationID:      cm.conversationID,
+		Type:                db.MessageTypeWarning,
+		UserData:            map[string]any{"text": notice.Text(), "routing": notice},
+		ExcludedFromContext: true,
+		BumpTimestamp:       true,
+	})
+	if err != nil {
+		return err
+	}
+	cm.Touch()
+	return cm.publishCreated(ctx, *message)
+}
 
 func (cm *ConversationManager) recordWarning(ctx context.Context, text string) error {
 	result, err := cm.db.CreateWarningMessage(ctx, cm.conversationID, text, maxConsecutiveWarnings, "Suppressing further warnings.")
@@ -1954,8 +2090,8 @@ func (cm *ConversationManager) systemPromptDisplayData(opts db.ConversationOptio
 // internal workers.
 func (cm *ConversationManager) renderSubagentSystemPrompt(ctx context.Context, opts db.ConversationOptions) (renderedSystemPrompt, error) {
 	// Only subagents use MCP tools and exe-dev integrations; internal
-	// workers (commit tours, transcriptions) don't, and
-	// notifyMCPServersChanged skips them too.
+	// workers (transcriptions) don't, and notifyMCPServersChanged skips them
+	// too.
 	var mcpServers []MCPServerInfo
 	var exeDev []ExeDevIntegrationInfo
 	if cm.role == roleSubagent {
@@ -2138,6 +2274,7 @@ func (cm *ConversationManager) detachLoopLocked() detachedLoop {
 	cm.loopSourceID = ""
 	cm.loopSourceRevision = 0
 	cm.toolSet = nil
+	cm.profileTurn = false
 	return detached
 }
 
@@ -2264,6 +2401,9 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 		// Update local cwd
 		cm.mu.Lock()
 		cm.cwd = newDir
+		if cm.toolSet != nil {
+			cm.toolSet.WorkingDir().Set(newDir)
+		}
 		cm.mu.Unlock()
 
 		// Broadcast conversation update to subscribers so UI gets the new cwd
@@ -2366,10 +2506,11 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 		RecordWarning: func(ctx context.Context, text string) error {
 			return cm.recordWarning(ctx, text)
 		},
-		Logger:     logger,
-		System:     system,
-		WorkingDir: cwd,
-		GitTracker: toolSet.GitTracker(),
+		RecordRoutingWarning: cm.recordRoutingWarning,
+		Logger:               logger,
+		System:               system,
+		WorkingDir:           cwd,
+		GitTracker:           toolSet.GitTracker(),
 		OnGitStateChange: func(ctx context.Context, state *gitstate.GitState) {
 			cm.recordGitStateChange(ctx, state)
 		},
@@ -2423,6 +2564,7 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 	cm.loopSourceID = sourceID
 	cm.loopSourceRevision = sourceRevision
 	cm.toolSet = toolSet
+	cm.turnToolConfig = toolSetConfig
 	// The cwd was read at the top of this function and baked into the toolset,
 	// but building one takes a while (DB reads, tool construction) and none of
 	// that happens under cm.mu — a SetCwd could have landed in between. It would

@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -72,6 +71,11 @@ func ClaudeModelName(userName string) string {
 
 func (s *Service) Provider() string { return "anthropic" }
 
+// SetReasoningOverride configures endpoint controls before the service is used.
+func (s *Service) SetReasoningOverride(caps *modelsdev.ReasoningCapabilities) {
+	s.ReasoningOverride = caps
+}
+
 func (s *Service) PatchProfile() string {
 	return llm.ModelPatchProfile(s.Model)
 }
@@ -80,18 +84,18 @@ func (s *Service) SupportsReasoning() bool {
 	if s.DisableReasoning {
 		return false
 	}
-	caps, found := modelsdev.LookupReasoningCapabilities(s.URL, cmp.Or(s.Model, DefaultModel))
+	caps, found := s.ReasoningOverride.Lookup(s.URL, cmp.Or(s.Model, DefaultModel))
 	return !found || caps.Supported
 }
 
-// SupportedReasoningLevels advertises exact effort levels from models.dev.
+// SupportedReasoningLevels advertises endpoint effort levels before models.dev.
 // Budget-token and unknown models return nil and retain the historical
 // standard-level fallback.
 func (s *Service) SupportedReasoningLevels() []llm.ThinkingLevel {
 	if s.DisableReasoning {
 		return nil
 	}
-	caps, found := modelsdev.LookupReasoningCapabilities(s.URL, cmp.Or(s.Model, DefaultModel))
+	caps, found := s.ReasoningOverride.Lookup(s.URL, cmp.Or(s.Model, DefaultModel))
 	if !found {
 		return nil
 	}
@@ -108,15 +112,19 @@ func (s *Service) SupportsServerSideWebSearch() bool {
 	return strings.HasPrefix(strings.ToLower(cmp.Or(s.Model, DefaultModel)), "claude")
 }
 
-// DefaultReasoningLevel reports the reasoning level applied to requests that
-// carry no per-conversation override. applyAnthropicThinking treats both
-// ThinkingLevelDefault and ThinkingLevelOff as "send no thinking", so those
-// surface as "off"; any other configured level surfaces by name.
+// DefaultReasoningLevel reports the configured level. Explicit endpoint
+// controls also apply the same capability checks and clamping as the request.
 func (s *Service) DefaultReasoningLevel() string {
 	if s.DisableReasoning {
 		return "off"
 	}
+	if s.ReasoningOverride != nil && !s.ReasoningOverride.Supported {
+		return ""
+	}
 	eff := s.ThinkingLevel
+	if s.ReasoningOverride != nil && s.ReasoningOverride.Levels != nil {
+		eff = s.effectiveThinkingLevel(eff)
+	}
 	if eff == llm.ThinkingLevelDefault || eff == llm.ThinkingLevelOff {
 		return "off"
 	}
@@ -168,7 +176,9 @@ func (s *Service) MaxImageBytes() int {
 // Service provides Claude completions.
 // Fields should not be altered concurrently with calling any method on Service.
 type Service struct {
-	DisableReasoning      bool              // omit thinking controls for unrecognized provider capabilities
+	DisableReasoning bool // omit thinking controls for unrecognized provider capabilities
+	// ReasoningOverride is advertised for this model at this endpoint; nil uses models.dev.
+	ReasoningOverride     *modelsdev.ReasoningCapabilities
 	HTTPC                 *http.Client      // defaults to http.DefaultClient if nil
 	URL                   string            // defaults to DefaultURL if empty
 	APIKey                string            // must be non-empty
@@ -351,11 +361,36 @@ var adaptiveThinkingMinVersion = map[string][2]int{
 // (thinking: {type: "adaptive"} + output_config: {effort: "..."}) instead of
 // the legacy manual thinking (thinking: {type: "enabled", budget_tokens: N}).
 func useAdaptiveThinking(model string) bool {
-	family, major, minor, ok := parseClaudeModel(model)
+	return atLeastVersion(model, adaptiveThinkingMinVersion)
+}
+
+// newTokenizerMinVersion maps Claude family names to the first version on
+// the tokenizer Opus 4.7 introduced, which needs ~25% more tokens for the
+// same text.
+var newTokenizerMinVersion = map[string][2]int{
+	"opus":   {4, 7},
+	"sonnet": {5, 0},
+	"haiku":  {5, 0},
+	"fable":  {0, 0},
+}
+
+// CharsPerToken is the characters per token of model's tokenizer, measured
+// on a mix of code, prose, JSON and command output.
+func CharsPerToken(model string) float64 {
+	if atLeastVersion(model, newTokenizerMinVersion) {
+		return 2.32
+	}
+	return 2.94
+}
+
+// atLeastVersion reports whether model is a Claude model at or above its
+// family's version in minVersions.
+func atLeastVersion(model string, minVersions map[string][2]int) bool {
+	family, major, minor, ok := llm.ParseClaudeModel(model)
 	if !ok {
 		return false
 	}
-	minVer, ok := adaptiveThinkingMinVersion[family]
+	minVer, ok := minVersions[family]
 	if !ok {
 		return false
 	}
@@ -393,54 +428,6 @@ func (s *Service) supportsThinkingBinding() bool {
 	return err == nil && u.Scheme == "https" &&
 		strings.EqualFold(u.Hostname(), "api.anthropic.com") &&
 		strings.TrimSuffix(u.Path, "/") == "/v1/messages"
-}
-
-// parseClaudeModel extracts the family ("opus", "sonnet", "haiku", "fable")
-// and version from a Claude model identifier. It handles bare names
-// ("claude-opus-5"), dotted versions ("claude-opus-4.8"), dated snapshots
-// ("claude-opus-4-8-20260115"), and provider-qualified names
-// ("us.anthropic.claude-opus-4-8-v1:0", "claude-opus-5@20260724"). Returns
-// ok=false for strings that don't follow the claude-<family>-<version> shape,
-// such as the legacy version-first names ("claude-3-opus-20240229"), which
-// all predate adaptive thinking anyway.
-func parseClaudeModel(model string) (family string, major, minor int, ok bool) {
-	tokens := strings.FieldsFunc(strings.ToLower(model), func(r rune) bool {
-		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
-	})
-	seenClaude := false
-	for i, tok := range tokens {
-		if tok == "claude" {
-			seenClaude = true
-			continue
-		}
-		if !seenClaude {
-			continue
-		}
-		if tok != "opus" && tok != "sonnet" && tok != "haiku" && tok != "fable" {
-			continue
-		}
-		// Parse up to two numeric tokens after the family as major/minor.
-		// Date snapshots (20260115) are large; version components are small.
-		var nums []int
-		for _, t := range tokens[i+1:] {
-			n, err := strconv.Atoi(t)
-			if err != nil || n >= 1000 {
-				break
-			}
-			nums = append(nums, n)
-			if len(nums) == 2 {
-				break
-			}
-		}
-		if len(nums) == 0 {
-			return "", 0, 0, false
-		}
-		if len(nums) > 1 {
-			minor = nums[1]
-		}
-		return tok, nums[0], minor, true
-	}
-	return "", 0, 0, false
 }
 
 // request represents the request payload for creating a message.
@@ -606,7 +593,9 @@ func fromLLMContent(c llm.Content) content {
 	case llm.ContentTypeToolUse:
 		d.ID = c.ID
 		d.ToolName = c.ToolName
-		d.ToolInput = c.ToolInput
+		// History from before llm.CanonicalToolInput may repeat names,
+		// which the API rejects.
+		d.ToolInput, _ = llm.CanonicalToolInput(c.ToolInput)
 		// Handle both nil and JSON "null" (which unmarshals as []byte("null"))
 		if d.ToolInput == nil || string(d.ToolInput) == "null" {
 			d.ToolInput = json.RawMessage("{}")
@@ -851,7 +840,7 @@ func (s *Service) buildRequest(r *llm.Request, stripThinking bool) *request {
 	}
 
 	if !s.DisableReasoning {
-		applyAnthropicThinking(req, model, llm.EffectiveThinkingLevel(s.ThinkingLevel, r.ThinkingLevel), maxTokens, s.supportsThinkingBinding())
+		s.applyAnthropicThinking(req, llm.EffectiveThinkingLevel(s.ThinkingLevel, r.ThinkingLevel), maxTokens, s.supportsThinkingBinding())
 	}
 	if req.Thinking != nil && req.Thinking.Type == "adaptive" && r.ToolChoice != nil {
 		switch r.ToolChoice.Type {
@@ -865,20 +854,33 @@ func (s *Service) buildRequest(r *llm.Request, stripThinking bool) *request {
 
 const minAnthropicThinkingBudget = 1024
 
+func (s *Service) adaptiveThinking() bool {
+	return useAdaptiveThinking(cmp.Or(s.Model, DefaultModel))
+}
+
+func (s *Service) effectiveThinkingLevel(level llm.ThinkingLevel) llm.ThinkingLevel {
+	if s.ReasoningOverride != nil {
+		return s.ReasoningOverride.ResolveLevel(level)
+	}
+	// Leave the legacy budget/adaptive behavior and native-model lookup intact.
+	if useAdaptiveThinking(cmp.Or(s.Model, DefaultModel)) {
+		caps, found := modelsdev.LookupReasoningCapabilities("", cmp.Or(s.Model, DefaultModel))
+		if found && len(caps.Levels) > 0 {
+			return llm.ClampThinkingLevel(level, caps.Levels)
+		}
+		if level == llm.ThinkingLevelMinimal {
+			return llm.ThinkingLevelLow
+		}
+	}
+	return level
+}
+
 // applyAnthropicThinking sets the Thinking / OutputConfig fields without
 // increasing the configured output allowance. Budget-style thinking shares
 // max_tokens with the final answer, so leave 1024 tokens for that answer.
-func applyAnthropicThinking(req *request, model string, level llm.ThinkingLevel, maxTokens int, supportsBinding bool) {
-	adaptive := useAdaptiveThinking(model)
-	if adaptive {
-		caps, found := modelsdev.LookupReasoningCapabilities("", model)
-		if found && len(caps.Levels) > 0 {
-			level = llm.ClampThinkingLevel(level, caps.Levels)
-		} else if level == llm.ThinkingLevelMinimal {
-			// Historical fallback for adaptive models without exact metadata.
-			level = llm.ThinkingLevelLow
-		}
-	}
+func (s *Service) applyAnthropicThinking(req *request, level llm.ThinkingLevel, maxTokens int, supportsBinding bool) {
+	level = s.effectiveThinkingLevel(level)
+	adaptive := s.adaptiveThinking()
 	if level == llm.ThinkingLevelOff || level == llm.ThinkingLevelDefault {
 		return
 	}
@@ -1119,7 +1121,7 @@ func invalidThinkingSignature(message string) bool {
 
 // parseSSEStream reads an SSE stream and assembles the complete response.
 // If onStream is non-nil, it is called with each text/thinking delta as it arrives.
-func parseSSEStream(r io.Reader, onStream func(llm.StreamDelta)) (*response, error) {
+func parseSSEStream(ctx context.Context, r io.Reader, onStream func(llm.StreamDelta)) (*response, error) {
 	var (
 		resp            *response
 		contents        []content // indexed by content block index
@@ -1137,6 +1139,9 @@ func parseSSEStream(r io.Reader, onStream func(llm.StreamDelta)) (*response, err
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
 			return fmt.Errorf("parsing SSE event (event=%q, data=%s): %w",
 				sse.EventType, truncateForError(data, 512), err)
+		}
+		if event.Type != "ping" {
+			llm.ReportProgress(ctx)
 		}
 
 		switch event.Type {
@@ -1218,9 +1223,6 @@ func parseSSEStream(r io.Reader, onStream func(llm.StreamDelta)) (*response, err
 
 		case "message_stop":
 			messageDone = true
-
-		case "ping":
-			// keepalive, ignore
 
 		case "error":
 			return fmt.Errorf("stream error event: %s", data)
@@ -1372,7 +1374,7 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 
 		switch {
 		case resp.StatusCode == http.StatusOK:
-			response, err := parseSSEStream(resp.Body, ir.OnStream)
+			response, err := parseSSEStream(ctx, resp.Body, ir.OnStream)
 			resp.Body.Close()
 			if err != nil {
 				// Stream parse errors might be transient (connection reset, etc.)

@@ -6,6 +6,7 @@ import {
   distillStatus,
   isCompactionCarried,
 } from "../../types";
+import { isTypedUserMessage } from "../../utils/conversationView";
 import { isCancelledToolResult } from "../utils/toolStatus";
 
 export interface CoalescedItem {
@@ -37,10 +38,9 @@ export interface CoalescedItem {
 export function coalesceMessages(
   messages: Message[],
   interruptedGeneration?: number,
-  /** Full hashes of tours still building. */
-  buildingTours: ReadonlySet<string> = new Set(),
 ): CoalescedItem[] {
   messages = messages.filter((message) => message.type !== "livetranscript");
+  messages = profileTurnBoundaries(messages);
   if (messages.length === 0) return [];
 
   const items: CoalescedItem[] = [];
@@ -75,13 +75,6 @@ export function coalesceMessages(
       }
     });
   }
-  // Tour request rows duplicate an ordinary gitinfo strip for the same commit and worktree,
-  // and add noise directly under another git row unless the tour is still building.
-  const stripTargets: GitInfoTarget[] = [];
-  messages.forEach((message) => {
-    const target = gitInfoTarget(message);
-    if (target && !target.tourRequest) stripTargets.push(target);
-  });
   const toolResultMap: Record<
     string,
     {
@@ -146,12 +139,7 @@ export function coalesceMessages(
     // header with nothing underneath it. Their cost is read straight off
     // messages in ChatInterface's usage walk, not from coalesced items.
     if (message.type === "slug") return;
-    const target = gitInfoTarget(message);
-    if (target?.tourRequest) {
-      if (stripTargets.some((strip) => sameGitTarget(strip, target))) return;
-      const previous = items.at(-1);
-      if (previous?.message?.type === "gitinfo" && !buildingTours.has(target.commit)) return;
-    }
+    if (isLegacyTourRequest(message)) return;
     if (message.type === "system") {
       if (!isDistillStatusMessage(message)) return;
       items.push(messageItem(message, carried));
@@ -295,6 +283,40 @@ export function coalesceMessages(
   return items;
 }
 
+// A profile-turn marker is display metadata, not a settings change. Its closing
+// boundary follows the terminal reply or precedes the next typed message.
+function profileTurnBoundaries(messages: Message[]): Message[] {
+  const result: Message[] = [];
+  let returnTo: string | null = null;
+  for (const message of messages) {
+    const nextTurn = returnTo !== null && isTypedUserMessage(message);
+    if (!nextTurn) result.push(message);
+    if (message.type === "profileturn") {
+      try {
+        const data =
+          typeof message.user_data === "string" ? JSON.parse(message.user_data) : message.user_data;
+        returnTo = data?.profile_return_to || "conversation settings";
+      } catch {
+        returnTo = null;
+      }
+    } else if (returnTo !== null && (nextTurn || message.type === "error" || message.end_of_turn)) {
+      result.push({
+        ...message,
+        message_id: `${message.message_id}:profile-end`,
+        type: "profileturn",
+        llm_data: null,
+        user_data: JSON.stringify({
+          profile_to: returnTo,
+          profile_mention_phase: "end",
+        }),
+      });
+      returnTo = null;
+    }
+    if (nextTurn) result.push(message);
+  }
+  return result;
+}
+
 function messageItem(message: Message, carried: boolean): CoalescedItem {
   return {
     type: "message",
@@ -306,30 +328,15 @@ function messageItem(message: Message, carried: boolean): CoalescedItem {
   };
 }
 
-interface GitInfoTarget {
-  commit: string;
-  worktree: string;
-  tourRequest: boolean;
-}
-
-function gitInfoTarget(message: Message): GitInfoTarget | null {
-  if (message.type !== "gitinfo" || !message.user_data) return null;
+// Older Shelleys recorded a gitinfo marker when a commit tour was requested.
+// Tours are gone; the marker would only repeat the commit's git strip.
+function isLegacyTourRequest(message: Message): boolean {
+  if (message.type !== "gitinfo" || !message.user_data) return false;
   try {
     const userData =
       typeof message.user_data === "string" ? JSON.parse(message.user_data) : message.user_data;
-    if (!userData?.commit) return null;
-    return {
-      commit: userData.commit,
-      worktree: userData.worktree ?? "",
-      tourRequest: userData.tour_request === true,
-    };
-  } catch (err) {
-    console.error("Failed to parse gitinfo user_data:", err);
-    return null;
+    return userData?.tour_request === true;
+  } catch {
+    return false;
   }
-}
-
-// Ordinary strips may carry an abbreviated commit; tour requests carry the full SHA.
-function sameGitTarget(strip: GitInfoTarget, request: GitInfoTarget): boolean {
-  return strip.worktree === request.worktree && request.commit.startsWith(strip.commit);
 }

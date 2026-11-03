@@ -67,6 +67,8 @@ export interface GlobalStreamOptions {
   onNotificationEvent?: (event: NotificationEvent) => void;
   /** Refresh the existing model catalog trigger after a server-side change. */
   onModelsChanged?: () => void;
+  /** Projects, conversation memberships, or action runs changed on the server. */
+  onWorkspaceChanged?: () => void;
   onStatusChange?: (status: StreamStatus) => void;
   /**
    * Called once after every successful re-establishment of the EventSource
@@ -85,6 +87,8 @@ export interface GlobalStreamOptions {
    */
   onResourceSnapshot?: (statuses: ResourceStatus[]) => void;
   onResourceStatus?: (status: ResourceStatus) => void;
+  /** The server runs a different UI build: offer to reload (see staleBuild). */
+  onStaleBuild?: () => void;
 }
 
 export interface GlobalStreamHandle {
@@ -110,17 +114,38 @@ function extractToolUseIds(msg: Message): string[] {
   }
 }
 
+const RELOADED_FOR_KEY = "shelley-reloaded-for-build";
+
+/** staleBuild reports whether this page should reload for the server's UI
+ * build: it differs from the page's, and the page has not already reloaded
+ * for it (so a stale cache can't loop). */
+function staleBuild(serverBuild: string): boolean {
+  const pageBuild = window.__SHELLEY_INIT__?.ui_build;
+  if (!pageBuild || pageBuild === serverBuild) return false;
+  try {
+    if (window.sessionStorage.getItem(RELOADED_FOR_KEY) === serverBuild) return false;
+    window.sessionStorage.setItem(RELOADED_FOR_KEY, serverBuild);
+  } catch {
+    return false;
+  }
+  return true;
+}
+
 export function connectGlobalStream({
   getHash,
   onListPatch,
   onNotificationEvent,
   onModelsChanged,
+  onWorkspaceChanged,
   onStatusChange,
   onReconnect,
   onResourceSnapshot,
   onResourceStatus,
+  onStaleBuild,
 }: GlobalStreamOptions): GlobalStreamHandle {
   let closed = false;
+  // Set once the server runs a newer UI build (see handleEvent).
+  let reloadWhenHidden = false;
   let eventSource: EventSource | null = null;
   let reconnectTimer: number | null = null;
   let heartbeatTimer: number | null = null;
@@ -221,6 +246,21 @@ export function connectGlobalStream({
   };
 
   const handleEvent = (data: StreamResponse) => {
+    if (data.ui_build && staleBuild(data.ui_build)) {
+      // The server runs a newer UI than this page (it was upgraded or
+      // restarted since), whose API may have changed underneath. Load it
+      // now if nobody is looking; otherwise offer to, and load it once the
+      // tab is hidden, so open dialogs, uploads and recordings survive.
+      if (document.visibilityState === "hidden") {
+        closed = true;
+        clearReconnect();
+        eventSource?.close();
+        window.location.reload();
+        return;
+      }
+      onStaleBuild?.();
+      reloadWhenHidden = true;
+    }
     if (data.conversation_list_patch) {
       onListPatch(data.conversation_list_patch);
     }
@@ -230,6 +270,7 @@ export function connectGlobalStream({
     if (data.models_changed) {
       onModelsChanged?.();
     }
+    if (data.workspace_changed) onWorkspaceChanged?.();
     const resource = data.resource_status;
     if (resourceSnapshot && resource) {
       resourceSnapshot.push(resource);
@@ -406,6 +447,7 @@ export function connectGlobalStream({
   // the wall-clock time since the last received frame and reconnect if the
   // connection has gone silent, regardless of readyState.
   const onVisibility = () => {
+    if (document.visibilityState === "hidden" && reloadWhenHidden) window.location.reload();
     if (document.visibilityState === "visible") reconnectIfStale();
   };
   // pageshow fires on bfcache restores (event.persisted), which on mobile

@@ -51,6 +51,9 @@ type BashTool struct {
 	// Env holds the conversation context exposed to invoked commands as
 	// SHELLEY_* environment variables.
 	Env ShelleyEnv
+	// VM, if set, is where the conversation's project work happens: each
+	// call names its target, the VM or this host (see VM).
+	VM VM
 
 	// cdHinted records that the chained-cd hint has been shown. The hint
 	// is shown at most once per BashTool, that is, once per conversation:
@@ -79,7 +82,7 @@ func (b *BashTool) Tool() *llm.Tool {
 	return &llm.Tool{
 		Name:        bashName,
 		Description: strings.TrimSpace(bashDescription),
-		InputSchema: llm.MustSchema(bashInputSchema),
+		InputSchema: llm.MustSchema(targetSchema(bashInputSchema, b.VM)),
 		Run:         llm.RunJSON(b.run),
 	}
 }
@@ -147,6 +150,11 @@ write a file and run it; both can share one call.
 type bashInput struct {
 	Command    string `json:"command"`
 	Background bool   `json:"background,omitempty"`
+	// SSHTarget is required when the conversation has a VM: its name, or
+	// "" for this machine.
+	SSHTarget *string `json:"ssh_target,omitempty"`
+	// vm is the resolved target: nil for this host.
+	vm VM
 }
 
 // BashDisplayData is the display data sent to the UI for bash tool results.
@@ -165,9 +173,19 @@ type BashBackgroundDisplay struct {
 }
 
 func (b *BashTool) run(ctx context.Context, req bashInput) llm.ToolOut {
-	// Check that the working directory exists
+	vm, err := targetVM(b.VM, req.SSHTarget)
+	if err != nil {
+		return llm.ErrorToolOut(err)
+	}
+	req.vm = vm
 	wd := b.getWorkingDir()
-	if _, err := os.Stat(wd); err != nil {
+	if vm != nil {
+		// Commands there start in its directory; a missing one fails there.
+		wd = vm.Dir()
+		if err := vm.Prepare(ctx); err != nil {
+			return llm.ErrorToolOut(err)
+		}
+	} else if _, err := os.Stat(wd); err != nil {
 		if os.IsNotExist(err) {
 			return llm.ErrorfToolOut("working directory does not exist: %s (use change_dir to switch to a valid directory)", wd)
 		}
@@ -175,7 +193,7 @@ func (b *BashTool) run(ctx context.Context, req bashInput) llm.ToolOut {
 	}
 
 	// do a quick permissions check (NOT a security barrier)
-	err := bashkit.Check(req.Command)
+	err = bashkit.Check(req.Command)
 	if err != nil {
 		return llm.ErrorToolOut(err)
 	}
@@ -188,7 +206,7 @@ func (b *BashTool) run(ctx context.Context, req bashInput) llm.ToolOut {
 	}
 
 	// Check for missing tools and try to install them if needed, best effort only
-	if b.EnableJITInstall {
+	if b.EnableJITInstall && vm == nil {
 		err := b.checkAndInstallMissingTools(ctx, req.Command)
 		if err != nil {
 			slog.DebugContext(ctx, "failed to auto-install missing tools", "error", err)
@@ -201,6 +219,9 @@ func (b *BashTool) run(ctx context.Context, req bashInput) llm.ToolOut {
 	}
 
 	display := BashDisplayData{WorkingDir: wd}
+	if vm != nil {
+		display.WorkingDir = vm.Name() + ":" + wd
+	}
 
 	res, execErr := b.executeBashInDir(ctx, req, wd)
 	if execErr != nil {
@@ -220,7 +241,7 @@ func (b *BashTool) run(ctx context.Context, req bashInput) llm.ToolOut {
 	}
 	exitCode := 0
 	display.ExitCode = &exitCode
-	if chainedCdLeavesDir(bashkit.ChainedCdPaths(req.Command), wd) && b.cdHinted.CompareAndSwap(false, true) {
+	if vm == nil && chainedCdLeavesDir(bashkit.ChainedCdPaths(req.Command), wd) && b.cdHinted.CompareAndSwap(false, true) {
 		out = chainedCdHint(wd) + "\n\n" + out
 	}
 	return llm.ToolOut{LLMContent: llm.TextContent(out), Display: display}
@@ -281,22 +302,37 @@ const (
 // command in its own process group, recording its exit status in exitPath
 // and its combined output in log. It is deliberately not tied to a
 // context: a backgrounded job must outlive the tool call and Shelley.
-func (b *BashTool) makeBashCommand(command, wd string, log *os.File, exitPath string) *exec.Cmd {
-	if b.Wrap != nil {
-		command = b.Wrap(command, wd)
+//
+// On a VM, the wrapper runs the command there (see VMJobScript) with the
+// same environment, minus this host's SHELLEY_* variables.
+func (b *BashTool) makeBashCommand(vm VM, command, wd string, log *os.File, exitPath string) *exec.Cmd {
+	commandEnv := []string{
+		"SKETCH=1",          // signal that this has been run by Sketch, sometimes useful for scripts
+		"EDITOR=/bin/false", // interactive editors won't work
+		`GIT_SEQUENCE_EDITOR=echo "To do an interactive rebase, run it in a tmux session." && exit 1`,
 	}
-	cmd := exec.Command("bash", "-c", bashJobWrapper, "shelley-job", command, exitPath)
-	cmd.Dir = wd
+	// Strip any inherited SHELLEY_* vars so we control them explicitly below.
+	env := stripShelleyEnv(os.Environ())
+	var cmd *exec.Cmd
+	if vm != nil {
+		argv := vm.Command(VMJobScript, append([]string{wd, command}, commandEnv...)...)
+		cmd = exec.Command("bash", append([]string{"-c", vmBashJobWrapper, "shelley-job", exitPath}, argv...)...)
+		cmd.Dir = b.getWorkingDir()
+	} else {
+		// An embedder's sandbox (claudetool.Sandbox) wraps the command to run
+		// inside it; a VM is its own isolation, so only the local path wraps.
+		if b.Wrap != nil {
+			command = b.Wrap(command, wd)
+		}
+		cmd = exec.Command("bash", "-c", bashJobWrapper, "shelley-job", command, exitPath)
+		cmd.Dir = wd
+		env = append(env, commandEnv...)
+		env = append(env, b.Env.Environ(cmd.Dir)...)
+	}
 	cmd.Stdin = nil
 	cmd.Stdout = log
 	cmd.Stderr = log
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	// Strip any inherited SHELLEY_* vars so we control them explicitly below.
-	env := stripShelleyEnv(os.Environ())
-	env = append(env, "SKETCH=1")          // signal that this has been run by Sketch, sometimes useful for scripts
-	env = append(env, "EDITOR=/bin/false") // interactive editors won't work
-	env = append(env, `GIT_SEQUENCE_EDITOR=echo "To do an interactive rebase, run it in a tmux session." && exit 1`)
-	env = append(env, b.Env.Environ(cmd.Dir)...)
 	cmd.Env = env
 	return cmd
 }
@@ -334,10 +370,13 @@ func (b *BashTool) executeBashInDir(ctx context.Context, req bashInput, wd strin
 	if err != nil {
 		return bashResult{}, fmt.Errorf("create job log: %w", err)
 	}
-	cmd := b.makeBashCommand(req.Command, wd, log, job.ExitPath)
+	cmd := b.makeBashCommand(req.vm, req.Command, wd, log, job.ExitPath)
 	// The git tracker watches where the command runs git until it exits,
 	// even if that is after it moves to the background.
-	releaseGitDirs := b.touchGitDirs(req.Command, wd)
+	releaseGitDirs := func() {}
+	if req.vm == nil {
+		releaseGitDirs = b.touchGitDirs(req.Command, wd)
+	}
 	job.StartedAt = time.Now()
 	err = cmd.Start()
 	log.Close() // the job holds its own descriptor
@@ -406,6 +445,18 @@ func (b *BashTool) executeBashInDir(ctx context.Context, req bashInput, wd strin
 	return bashResult{out: out}, nil
 }
 
+// jobWaitGuidance is blunt because models tend to `sleep N; tail log`
+// instead of ending their turn, which delays the completion notice.
+const jobWaitGuidance = `Its output will arrive as a new message that wakes you when the job exits.
+What to do now:
+- Need its output to continue? END YOUR TURN NOW. Write one line like "Waiting for the job." and stop.
+- Have work that doesn't need its output? Do that, then end your turn.
+NEVER wait on it. Until it finishes:
+- NO sleep, for any duration (` + "`sleep 45; tail <log>`" + ` is exactly the wrong move)
+- NO tail, cat, or grep of its log to see if it's done
+- NO checking on it with ps, ls, or a loop
+After it finishes, read the log freely. Any command you run keeps you busy, so the job's completion cannot wake you until it returns.`
+
 // background hands the still-running job to b.Jobs, which reports its
 // completion to the conversation, and describes it for the model.
 // how leads the description, e.g. "Started as" or "Still running after 1m0s; moved to".
@@ -418,7 +469,8 @@ func (b *BashTool) background(ctx context.Context, job BackgroundJob, exited <-c
 		out.WriteString(tail + "\n")
 	}
 	fmt.Fprintf(&out, "[%s background job %s (PGID %d). Log: %s\n", how, job.ID, job.PID, job.LogPath)
-	fmt.Fprintf(&out, "Its output will arrive as a new message; never poll or sleep for it. Continue only with work that doesn't need its output; otherwise end your turn. Cancel with `kill -- -%d`.]", job.PID)
+	out.WriteString(jobWaitGuidance)
+	fmt.Fprintf(&out, " Cancel with `kill -- -%d`.]", job.PID)
 	return bashResult{out: out.String(), job: &job}, nil
 }
 

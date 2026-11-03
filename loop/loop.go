@@ -17,14 +17,17 @@ import (
 
 var errMessagePersistence = errors.New("message persistence failed")
 
-// maxTurnDuration is an absolute backstop on a single LLM request (including
-// its inner transport retries). The primary bound on a stuck stream is the
-// transport idle/stall timeout. This ceiling only exists to stop a provider
-// that keeps the connection warm with heartbeats/keepalives (which reset the
-// idle timer) from hanging a turn indefinitely. It is deliberately far larger
-// than the idle window so that genuinely long, steadily-streaming turns are
-// unaffected.
-const maxTurnDuration = 15 * time.Minute
+// stallTimeout bounds how long a single LLM request (including its inner
+// transport retries) may go without a model event. Keepalives do not count,
+// so a provider that keeps a dead turn's connection warm is still cut off,
+// while a slow but steadily streaming response runs to completion. The
+// transport's byte-level idle timeout separately catches silent sockets.
+const stallTimeout = 5 * time.Minute
+
+// maxRequestDuration bounds a single LLM request (including its inner
+// transport retries) however steadily it streams, so a model that never
+// finishes cannot hold a turn forever.
+const maxRequestDuration = 60 * time.Minute
 
 // MessageRecordFunc is called to record new messages to persistent storage.
 // otherUsage carries the usage of indirect LLM calls affiliated with the
@@ -34,6 +37,14 @@ type MessageRecordFunc func(ctx context.Context, message llm.Message, usage llm.
 
 // WarningRecordFunc is called to record user-visible warnings that are not sent to the LLM.
 type WarningRecordFunc func(ctx context.Context, text string) error
+
+// TurnRunner overrides one turn without changing the loop's defaults.
+type TurnRunner func(context.Context, RunConfig) error
+
+type queuedMessage struct {
+	message llm.Message
+	run     TurnRunner
+}
 
 // GitStateChangeFunc is called when the git state changes at the end of a turn.
 // This is used to record user-visible notifications about git changes.
@@ -85,6 +96,8 @@ type Config struct {
 	// RewriteFinalReply, if set, may turn a reply that would end the turn
 	// into tool calls, at most once per turn. See Hooks.RewriteFinalReply.
 	RewriteFinalReply func(context.Context, llm.Message) (llm.Message, bool)
+
+	RecordRoutingWarning RoutingNoticeRecordFunc
 }
 
 // Injection is what Config.InjectMessages splices into a running turn.
@@ -107,7 +120,8 @@ type Loop struct {
 	recordMessage    MessageRecordFunc
 	recordWarning    WarningRecordFunc
 	history          []llm.Message
-	messageQueue     []llm.Message
+	messageQueue     []queuedMessage
+	turnRunner       TurnRunner
 	totalUsage       llm.Usage
 	mu               sync.Mutex
 	logger           *slog.Logger
@@ -125,6 +139,9 @@ type Loop struct {
 	promptCacheKey   string
 	notify           chan struct{} // signaled when a message is queued or retry requested
 	retryPending     bool          // set by Retry() to re-run processLLMRequest with current history
+
+	modelRouting         modelRouting
+	recordRoutingWarning RoutingNoticeRecordFunc
 }
 
 // NewLoop creates a new Loop instance with the provided configuration
@@ -141,7 +158,7 @@ func NewLoop(config Config) *Loop {
 		tools:            config.Tools,
 		recordMessage:    config.RecordMessage,
 		recordWarning:    config.RecordWarning,
-		messageQueue:     make([]llm.Message, 0),
+		messageQueue:     make([]queuedMessage, 0),
 		logger:           logger,
 		system:           config.System,
 		workingDir:       config.WorkingDir,
@@ -156,6 +173,8 @@ func NewLoop(config Config) *Loop {
 		thinkingLevel:    config.ThinkingLevel,
 		promptCacheKey:   config.PromptCacheKey,
 		notify:           make(chan struct{}, 1),
+
+		recordRoutingWarning: config.RecordRoutingWarning,
 	}
 }
 
@@ -190,6 +209,18 @@ func (l *Loop) QueueUserMessage(message llm.Message) {
 	l.QueueMessages(message)
 }
 
+// QueueTurn runs message separately from adjacent messages. Retry uses the
+// same runner; the next ordinary message uses the loop's original settings.
+func (l *Loop) QueueTurn(message llm.Message, run TurnRunner) {
+	l.mu.Lock()
+	l.messageQueue = append(l.messageQueue, queuedMessage{message, run})
+	l.mu.Unlock()
+	select {
+	case l.notify <- struct{}{}:
+	default:
+	}
+}
+
 // QueueMessages atomically appends one or more messages to the loop's queue
 // in order, then wakes the loop. The messages can be of any role; this is
 // useful for splicing in a synthetic tool_use / tool_result pair that must
@@ -199,7 +230,9 @@ func (l *Loop) QueueMessages(messages ...llm.Message) {
 		return
 	}
 	l.mu.Lock()
-	l.messageQueue = append(l.messageQueue, messages...)
+	for _, message := range messages {
+		l.messageQueue = append(l.messageQueue, queuedMessage{message: message})
+	}
 	l.logger.Debug("queued messages", "count", len(messages))
 	l.mu.Unlock()
 	// Wake the run loop immediately.
@@ -278,10 +311,8 @@ func (l *Loop) Go(ctx context.Context) error {
 		hasQueuedMessages := len(l.messageQueue) > 0
 		if hasQueuedMessages {
 			// Add queued messages to history (they are already recorded to DB by ConversationManager)
-			for _, msg := range l.messageQueue {
-				l.history = append(l.history, msg)
-			}
-			l.messageQueue = l.messageQueue[:0] // Clear queue
+			l.turnRunner = l.messageQueue[0].run
+			l.history = append(l.history, l.takeQueuedLocked(l.turnRunner != nil)...)
 		}
 		retryPending := l.retryPending
 		l.retryPending = false
@@ -327,10 +358,8 @@ func (l *Loop) ProcessOneTurn(ctx context.Context) error {
 	l.mu.Lock()
 	if len(l.messageQueue) > 0 {
 		// Add queued messages to history (they are already recorded to DB by ConversationManager)
-		for _, msg := range l.messageQueue {
-			l.history = append(l.history, msg)
-		}
-		l.messageQueue = nil
+		l.turnRunner = l.messageQueue[0].run
+		l.history = append(l.history, l.takeQueuedLocked(l.turnRunner != nil)...)
 	}
 	l.mu.Unlock()
 
@@ -345,9 +374,13 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 	l.mu.Lock()
 	history := append([]llm.Message(nil), l.history...)
 	thinkingLevel := l.thinkingLevel
+	run := l.turnRunner
 	l.mu.Unlock()
 
-	err := Run(ctx, RunConfig{
+	if run == nil {
+		run = Run
+	}
+	err := run(ctx, RunConfig{
 		LLM:            l.llm,
 		ModelID:        l.modelID,
 		Messages:       history,
@@ -359,12 +392,27 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 		Pending:        l.pending,
 		Hooks:          l.hooks(),
 		Logger:         l.logger,
+		modelRouting:   &l.modelRouting,
 	})
 	if err != nil {
 		return err
 	}
 	l.checkGitStateChange(ctx)
 	return nil
+}
+
+// The caller holds mu. Ordinary messages can share a turn, but an override
+// is always a turn boundary.
+func (l *Loop) takeQueuedLocked(isolated bool) []llm.Message {
+	var messages []llm.Message
+	for _, queued := range l.messageQueue {
+		if len(messages) > 0 && (isolated || queued.run != nil) {
+			break
+		}
+		messages = append(messages, queued.message)
+	}
+	l.messageQueue = l.messageQueue[len(messages):]
+	return messages
 }
 
 func (l *Loop) currentSystem() []llm.SystemContent {
@@ -375,8 +423,10 @@ func (l *Loop) currentSystem() []llm.SystemContent {
 
 func (l *Loop) pending(ctx context.Context, messages []llm.Message) ([]llm.Message, error) {
 	l.mu.Lock()
-	queued := l.messageQueue
-	l.messageQueue = nil
+	var queued []llm.Message
+	if l.turnRunner == nil && len(l.messageQueue) > 0 && l.messageQueue[0].run == nil {
+		queued = l.takeQueuedLocked(false)
+	}
 	l.history = append(l.history, queued...)
 	l.mu.Unlock()
 	messages = append(messages, queued...)
@@ -436,7 +486,8 @@ func (l *Loop) hooks() Hooks {
 			l.appendContext(r.Message)
 			return nil
 		},
-		OnWarning: l.recordWarning,
+		OnWarning:        l.recordWarning,
+		OnRoutingWarning: l.recordRoutingWarning,
 	}
 	if l.onStreamDelta != nil {
 		h.OnStreamingResponse = func(_ context.Context, d llm.StreamDelta) { l.onStreamDelta(d) }
@@ -465,16 +516,15 @@ func (l *Loop) checkGitStateChange(ctx context.Context) {
 // for cost tracking (excluded from context) and an error message for the user.
 func userFacingLLMError(err error, trace *llm.RequestTrace) string {
 	var msg string
-	if info, ok := llm.RequestErrorInfoFromError(err); ok && info.IdleStallDuration > 0 {
-		msg = fmt.Sprintf(
-			"LLM request timed out: the model stopped sending data for %s "+
-				"(idle/stall timeout), so the request was aborted. This usually "+
-				"means the provider or upstream connection stalled mid-response, "+
-				"not that your turn was too long — a slow but steadily streaming "+
-				"response is allowed to finish. Press Retry to try again.\n\n"+
-				"Details: %v",
-			info.IdleStallDuration, err,
-		)
+	var tooLong *tooLongError
+	if errors.As(err, &tooLong) {
+		msg = fmt.Sprintf("LLM request took too long: the model was still responding after %s, "+
+			"so Shelley aborted the request. Press Retry to try again.\n\nDetails: %v",
+			tooLong.limit, err)
+	} else if info, ok := llm.RequestErrorInfoFromError(err); ok && info.IdleStallDuration > 0 {
+		msg = fmt.Sprintf("LLM request stalled: the model produced no output for %s, "+
+			"so Shelley aborted the request. Press Retry to try again.\n\nDetails: %v",
+			info.IdleStallDuration, err)
 	} else {
 		msg = fmt.Sprintf("LLM request failed: %v", err)
 	}
@@ -505,7 +555,7 @@ func isRetryableError(err error) bool {
 	if info, ok := llm.RequestErrorInfoFromError(err); ok {
 		return info.Retryable && !info.NoImmediateRetry
 	}
-	lower := strings.ToLower(err.Error())
+	lower := strings.ToLower(llm.ErrorText(err))
 	for _, p := range []string{
 		"eof",
 		"connection reset",
@@ -547,7 +597,7 @@ func IsRetryableLLMError(err error) bool {
 	if info, ok := llm.RequestErrorInfoFromError(err); ok {
 		return info.Retryable
 	}
-	lower := strings.ToLower(err.Error())
+	lower := strings.ToLower(llm.ErrorText(err))
 
 	// Hard non-retryable signals override anything else.
 	nonRetryable := []string{

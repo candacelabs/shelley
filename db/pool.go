@@ -207,7 +207,7 @@ func (p *Pool) Exec(ctx context.Context, query string, args ...interface{}) (err
 		p.give(p.writer, conn)
 		p.checkDiskFull(err)
 	}()
-	_, err = conn.ExecContext(ctx, query, args...)
+	_, err = conn.ExecContext(ctx, Rebind(query), args...)
 	return wrapErr("pool.exec", err)
 }
 
@@ -327,7 +327,7 @@ type Tx struct {
 }
 
 func (tx *Tx) Exec(query string, args ...interface{}) (sql.Result, error) {
-	res, err := tx.conn.ExecContext(tx.ctx, query, args...)
+	res, err := tx.conn.ExecContext(tx.ctx, Rebind(query), args...)
 	return res, wrapErr("exec", err)
 }
 
@@ -343,12 +343,12 @@ func (rx *Rx) Context() context.Context {
 }
 
 func (rx *Rx) Query(query string, args ...interface{}) (*sql.Rows, error) {
-	rows, err := rx.conn.QueryContext(rx.ctx, query, args...)
+	rows, err := rx.conn.QueryContext(rx.ctx, Rebind(query), args...)
 	return rows, wrapErr("query", err)
 }
 
 func (rx *Rx) QueryRow(query string, args ...interface{}) *Row {
-	rows, err := rx.conn.QueryContext(rx.ctx, query, args...)
+	rows, err := rx.conn.QueryContext(rx.ctx, Rebind(query), args...)
 	return &Row{err: err, rows: rows}
 }
 

@@ -410,11 +410,11 @@ WITH RECURSIVE descendants(conversation_id) AS (
 SELECT
   m.model_name,
   m.llm_api_url,
-  CAST(COALESCE(m.usage_data ->> 'input_tokens', 0) AS BIGINT) AS input_tokens,
-  CAST(COALESCE(m.usage_data ->> 'cache_creation_input_tokens', 0) AS BIGINT) AS cache_creation_input_tokens,
-  CAST(COALESCE(m.usage_data ->> 'cache_read_input_tokens', 0) AS BIGINT) AS cache_read_input_tokens,
-  CAST(COALESCE(m.usage_data ->> 'output_tokens', 0) AS BIGINT) AS output_tokens,
-  CAST(COALESCE(m.usage_data ->> 'cost_usd', 0) AS DOUBLE PRECISION) AS cost_usd
+  CAST(COALESCE(m.usage_data::jsonb ->> 'input_tokens', '0') AS BIGINT) AS input_tokens,
+  CAST(COALESCE(m.usage_data::jsonb ->> 'cache_creation_input_tokens', '0') AS BIGINT) AS cache_creation_input_tokens,
+  CAST(COALESCE(m.usage_data::jsonb ->> 'cache_read_input_tokens', '0') AS BIGINT) AS cache_read_input_tokens,
+  CAST(COALESCE(m.usage_data::jsonb ->> 'output_tokens', '0') AS BIGINT) AS output_tokens,
+  CAST(COALESCE(m.usage_data::jsonb ->> 'cost_usd', '0') AS DOUBLE PRECISION) AS cost_usd
 -- CROSS JOIN keeps the small descendants set outermost. A regular JOIN lets
 -- SQLite start from every agent message, which makes this query scan the full
 -- messages table even when the conversation has no subagents.
@@ -423,11 +423,11 @@ CROSS JOIN messages m
 WHERE m.conversation_id = d.conversation_id
   AND m.type = 'agent' AND m.usage_data IS NOT NULL
   -- Synthetic end-of-turn markers have usage_data but no tokens or cost.
-  AND (m.usage_data ->> 'input_tokens' > 0
-    OR m.usage_data ->> 'cache_creation_input_tokens' > 0
-    OR m.usage_data ->> 'cache_read_input_tokens' > 0
-    OR m.usage_data ->> 'output_tokens' > 0
-    OR m.usage_data ->> 'cost_usd' > 0);
+  AND ((m.usage_data::jsonb ->> 'input_tokens')::numeric > 0
+    OR (m.usage_data::jsonb ->> 'cache_creation_input_tokens')::numeric > 0
+    OR (m.usage_data::jsonb ->> 'cache_read_input_tokens')::numeric > 0
+    OR (m.usage_data::jsonb ->> 'output_tokens')::numeric > 0
+    OR (m.usage_data::jsonb ->> 'cost_usd')::numeric > 0);
 
 -- name: GetSubagentOtherUsage :many
 -- Per-entry indirect LLM usage (messages.other_usage_data entries) across all
@@ -444,16 +444,21 @@ WITH RECURSIVE descendants(conversation_id) AS (
 SELECT
   CAST(COALESCE(je.value ->> 'model', '') AS TEXT) AS model_name,
   CAST(COALESCE(je.value ->> 'url', '') AS TEXT) AS llm_api_url,
-  CAST(COALESCE(je.value ->> 'input_tokens', 0) AS BIGINT) AS input_tokens,
-  CAST(COALESCE(je.value ->> 'cache_creation_input_tokens', 0) AS BIGINT) AS cache_creation_input_tokens,
-  CAST(COALESCE(je.value ->> 'cache_read_input_tokens', 0) AS BIGINT) AS cache_read_input_tokens,
-  CAST(COALESCE(je.value ->> 'output_tokens', 0) AS BIGINT) AS output_tokens,
-  CAST(COALESCE(je.value ->> 'cost_usd', 0) AS DOUBLE PRECISION) AS cost_usd
+  CAST(COALESCE(je.value ->> 'input_tokens', '0') AS BIGINT) AS input_tokens,
+  CAST(COALESCE(je.value ->> 'cache_creation_input_tokens', '0') AS BIGINT) AS cache_creation_input_tokens,
+  CAST(COALESCE(je.value ->> 'cache_read_input_tokens', '0') AS BIGINT) AS cache_read_input_tokens,
+  CAST(COALESCE(je.value ->> 'output_tokens', '0') AS BIGINT) AS output_tokens,
+  CAST(COALESCE(je.value ->> 'cost_usd', '0') AS DOUBLE PRECISION) AS cost_usd
 -- Keep descendants outermost here too, before expanding each matching
 -- message's JSON. See GetSubagentUsage above.
 FROM descendants d
 CROSS JOIN messages m
-CROSS JOIN jsonb_each(m.other_usage_data::jsonb) je
+-- other_usage_data is an array of entries (SQLite's json_each walked it);
+-- a lone object counts as one entry.
+CROSS JOIN LATERAL jsonb_array_elements(CASE jsonb_typeof(m.other_usage_data::jsonb)
+    WHEN 'array' THEN m.other_usage_data::jsonb
+    WHEN 'object' THEN jsonb_build_array(m.other_usage_data::jsonb)
+    ELSE '[]'::jsonb END) AS je
 WHERE m.conversation_id = d.conversation_id
   AND m.other_usage_data IS NOT NULL;
 
@@ -621,14 +626,6 @@ SELECT * FROM conversations
 WHERE queued_messages LIKE '%"kind":"transcription"%'
 ORDER BY created_at ASC;
 
--- name: ListCommitTourWorkers :many
--- Specialized child conversations durably tracking requested commit tours.
-SELECT * FROM conversations
-WHERE parent_conversation_id IS NOT NULL
-  AND user_initiated = FALSE
-  AND conversation_options LIKE '%"kind":"commit-tour"%'
-ORDER BY created_at ASC, conversation_id ASC;
-
 -- name: CreateChannelConversation :one
 INSERT INTO conversations (conversation_id, user_initiated, model, conversation_options, external_conversation_id, external_endpoint)
 VALUES ($1, TRUE, $2, $3, $4, $5)
@@ -638,10 +635,13 @@ RETURNING *;
 SELECT * FROM conversations WHERE external_conversation_id = $1;
 
 -- name: ListChannelConversationsWithQueuedMessages :many
--- Conversations bound to an external chat with queued messages. Used once
+-- Conversations with queued messages nobody may be watching: those bound to
+-- an external chat, and those holding a project action's report. Used once
 -- at startup to drain them.
 SELECT * FROM conversations
-WHERE external_conversation_id IS NOT NULL AND queued_messages != '[]'
+WHERE queued_messages != '[]' AND (external_conversation_id IS NOT NULL OR EXISTS (
+    SELECT 1 FROM json_each(CASE WHEN json_valid(queued_messages) THEN queued_messages ELSE '[]' END) WHERE json_extract(value, '$.user_data.action_run_id') IS NOT NULL
+))
 ORDER BY created_at ASC;
 
 -- name: GetSearchEnhancementModel :one
