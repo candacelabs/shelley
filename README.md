@@ -54,6 +54,7 @@
 > |---|---|---|
 > | page | `<script src="/main.js">`, calls `/api/…` | `<base href="/shelley/">`; every asset, call, worker and route is relative |
 > | conversation link | `https://<hostname>.exe.xyz/c/<slug>` | `https://example.com/shelley/c/<slug>` |
+> | a citation in a message, `[↗](/c/abc?message_id=1)` | `/c/abc?message_id=1`, which under a mount is the host's root, not Shelley | `/shelley/c/abc?message_id=1` |
 >
 > With no public base set, the page works at `/` as upstream's does, and notifications carry no link.
 >
@@ -61,10 +62,10 @@
 >
 > | | |
 > |---|---|
-> | upstream | merged to `6c48a83` (2026-11-03); upstream is merged in, never rebased over ([#1](https://github.com/candacelabs/shelley/issues/1)) |
+> | upstream | merged to `3df5460` (2026-11-03); upstream is merged in, never rebased over ([#1](https://github.com/candacelabs/shelley/issues/1)) |
 > | upstream's SQLite migrations | ported into `db/postgres_schema.sql` through upstream's 059 |
 > | upstream's hand-written SQL | runs unchanged: `db.Rebind` turns `?` into `$n`, and the schema defines SQLite's JSON functions (`json_extract`, `json_each`, …) |
-> | `db` tests | on PostgreSQL (a throwaway cluster from `initdb` on `PATH`, or `SHELLEY_TEST_DATABASE_URL`): 101 pass; 15 written for SQLite (`PRAGMA`, `sqlite_schema`, FTS5 snippets, SQLite's error text) still fail ([#2](https://github.com/candacelabs/shelley/issues/2)) |
+> | `db` tests | on PostgreSQL (a throwaway cluster from `initdb` on `PATH`, or `SHELLEY_TEST_DATABASE_URL`): 101 pass; 15 written for SQLite (`PRAGMA`, `sqlite_schema`, FTS5 snippets, SQLite's error text) still fail ([#2](https://github.com/candacelabs/shelley/issues/2)). Each test binary's cluster lives under `/dev/shm` and is removed by the next run once its binary is gone. |
 > | `ui` | type checks and unit tests pass |
 
 ---
