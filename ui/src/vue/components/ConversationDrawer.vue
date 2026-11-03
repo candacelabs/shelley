@@ -747,6 +747,7 @@ import ConversationRow from "./ConversationDrawerRow.vue";
 import ProjectVMSetup from "./ProjectVMSetup.vue";
 import CustomizationStatus from "./CustomizationStatus.vue";
 import { useCustomizations } from "../composables/customizations";
+import { notRunning } from "../../services/customizations";
 import ConversationQueryEditor from "./ConversationQueryEditor.vue";
 import Button from "primevue/button";
 import ContextMenu from "primevue/contextmenu";
@@ -814,8 +815,14 @@ const emit = defineEmits<{
 const { t } = useI18n();
 const workspace = useWorkspace();
 const customizations = useCustomizations();
+// A build the server already runs needs nothing more; its task shows no build line.
 const customizationByConversation = computed(
-  () => new Map(customizations.entries.value.map((entry) => [entry.conversation_id, entry])),
+  () =>
+    new Map(
+      customizations.entries.value
+        .filter(notRunning)
+        .map((entry) => [entry.conversation_id, entry]),
+    ),
 );
 const customizationFor = (id: string) => customizationByConversation.value.get(id);
 const rowError = ref("");
@@ -1313,7 +1320,9 @@ function formatDate(timestamp: string): string {
 
 const formatCwdForDisplay = tildifyPath;
 
+// Workspace mode's rows leave out the machine and directory: projects set them.
 function workingDirectory(c: Conversation): { text: string; title: string } | null {
+  if (workspaceMode) return null;
   const data = workspace.data.value;
   const vm = data?.vms.find(
     (v) => v.conversation_id === c.conversation_id || v.conversation_id === c.parent_conversation_id,

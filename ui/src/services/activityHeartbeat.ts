@@ -11,7 +11,7 @@ export const ACTIVITY_EVENTS = [
 export const ACTIVITY_THROTTLE_MS = 5000;
 
 function sendActivity() {
-  fetch("/api/activity", { method: "POST", headers: { "X-Shelley-Request": "1" } }).catch(
+  fetch("api/activity", { method: "POST", headers: { "X-Shelley-Request": "1" } }).catch(
     (err: unknown) => console.warn("Activity heartbeat failed", err),
   );
 }
