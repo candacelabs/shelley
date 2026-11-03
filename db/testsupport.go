@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,6 +33,45 @@ const (
 	testReadyLine   = "database system is ready to accept connections"
 	testMigrateTime = 60 * time.Second
 )
+
+// Where the throwaway clusters live: clusterPrefix<pid>-… under
+// clusterRoot, in RAM where the OS has /dev/shm.
+const (
+	sharedMemory  = "/dev/shm"
+	clusterPrefix = "shelley-test-postgres-"
+)
+
+// clusterRoot is /dev/shm when it exists, else the OS's temporary directory.
+func clusterRoot() string {
+	if info, err := os.Stat(sharedMemory); err == nil && info.IsDir() {
+		return sharedMemory
+	}
+	return os.TempDir()
+}
+
+// sweepClusters removes the clusters under root whose test binary is no
+// longer running (its pid is in the name); a cluster outlives its binary,
+// which is killed, not stopped.
+func sweepClusters(root string) error {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	var failed error
+	for _, entry := range entries {
+		rest, ok := strings.CutPrefix(entry.Name(), clusterPrefix)
+		if !ok || !entry.IsDir() {
+			continue
+		}
+		owner, _, _ := strings.Cut(rest, "-")
+		pid, err := strconv.Atoi(owner)
+		if err != nil || pid == os.Getpid() || processAlive(pid) {
+			continue
+		}
+		failed = errors.Join(failed, os.RemoveAll(filepath.Join(root, entry.Name())))
+	}
+	return failed
+}
 
 // ErrNoTestPostgres is a test run with no server named and no initdb on PATH.
 var ErrNoTestPostgres = errors.New("db: tests need PostgreSQL: set " + TestDatabaseEnv + " or put initdb and postgres on PATH")
@@ -150,7 +190,12 @@ func (server *testServer) startCluster() error {
 	if err != nil {
 		return ErrNoTestPostgres
 	}
-	root, err := os.MkdirTemp("", "shelley-test-postgres-")
+	// One root for every test binary's cluster, so a cluster a killed
+	// binary left behind is found and removed by the next one: each is
+	// about 56,000 files, and on a tmpfs capped by inodes a few dozen fill it.
+	clusters := clusterRoot()
+	_ = sweepClusters(clusters)
+	root, err := os.MkdirTemp(clusters, fmt.Sprintf("%s%d-", clusterPrefix, os.Getpid()))
 	if err != nil {
 		return err
 	}
