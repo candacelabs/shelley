@@ -667,9 +667,9 @@ func TestSystemPromptUsesCwdFromConversation(t *testing.T) {
 	// Find the system message
 	var systemPrompt string
 	for _, msg := range messages {
-		if msg.Type == "system" && msg.LlmData != nil {
+		if msg.Type == "system" && msg.LlmData.Valid {
 			var llmMsg llm.Message
-			if err := json.Unmarshal([]byte(*msg.LlmData), &llmMsg); err == nil {
+			if err := json.Unmarshal([]byte(msg.LlmData.String), &llmMsg); err == nil {
 				for _, content := range llmMsg.Content {
 					if content.Type == llm.ContentTypeText {
 						systemPrompt = content.Text

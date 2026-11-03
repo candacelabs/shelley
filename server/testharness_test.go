@@ -123,12 +123,12 @@ func (h *TestHarness) WaitToolResult() string {
 		}
 
 		for _, msg := range messages {
-			if msg.Type != string(db.MessageTypeUser) || msg.LlmData == nil {
+			if msg.Type != string(db.MessageTypeUser) || !msg.LlmData.Valid {
 				continue
 			}
 
 			var llmMsg llm.Message
-			if err := json.Unmarshal([]byte(*msg.LlmData), &llmMsg); err != nil {
+			if err := json.Unmarshal([]byte(msg.LlmData.String), &llmMsg); err != nil {
 				continue
 			}
 
@@ -177,12 +177,12 @@ func (h *TestHarness) WaitResponse() string {
 		count := 0
 		var lastText string
 		for _, msg := range messages {
-			if msg.Type != string(db.MessageTypeAgent) || msg.LlmData == nil {
+			if msg.Type != string(db.MessageTypeAgent) || !msg.LlmData.Valid {
 				continue
 			}
 
 			var llmMsg llm.Message
-			if err := json.Unmarshal([]byte(*msg.LlmData), &llmMsg); err != nil {
+			if err := json.Unmarshal([]byte(msg.LlmData.String), &llmMsg); err != nil {
 				continue
 			}
 

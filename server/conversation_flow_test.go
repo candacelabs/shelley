@@ -92,11 +92,11 @@ func testMessageQueuedDuringThinking(t *testing.T) {
 		if msg.Type != string(db.MessageTypeUser) {
 			continue
 		}
-		if msg.LlmData == nil {
+		if !msg.LlmData.Valid {
 			continue
 		}
 		var llmMsg llm.Message
-		if err := json.Unmarshal([]byte(*msg.LlmData), &llmMsg); err != nil {
+		if err := json.Unmarshal([]byte(msg.LlmData.String), &llmMsg); err != nil {
 			continue
 		}
 		for _, content := range llmMsg.Content {
@@ -128,11 +128,11 @@ func testMessageQueuedDuringThinking(t *testing.T) {
 		}
 		// Look for response to second message
 		for _, msg := range messages {
-			if msg.Type != string(db.MessageTypeAgent) || msg.LlmData == nil {
+			if msg.Type != string(db.MessageTypeAgent) || !msg.LlmData.Valid {
 				continue
 			}
 			var llmMsg llm.Message
-			if err := json.Unmarshal([]byte(*msg.LlmData), &llmMsg); err != nil {
+			if err := json.Unmarshal([]byte(msg.LlmData.String), &llmMsg); err != nil {
 				continue
 			}
 			for _, content := range llmMsg.Content {
@@ -288,11 +288,11 @@ func waitForToolUseRecorded(t *testing.T, database *db.DB, conversationID string
 			return false
 		}
 		for _, msg := range messages {
-			if msg.Type != string(db.MessageTypeAgent) || msg.LlmData == nil {
+			if msg.Type != string(db.MessageTypeAgent) || !msg.LlmData.Valid {
 				continue
 			}
 			var llmMsg llm.Message
-			if err := json.Unmarshal([]byte(*msg.LlmData), &llmMsg); err != nil {
+			if err := json.Unmarshal([]byte(msg.LlmData.String), &llmMsg); err != nil {
 				continue
 			}
 			for _, content := range llmMsg.Content {

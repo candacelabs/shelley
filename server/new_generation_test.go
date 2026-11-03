@@ -107,7 +107,7 @@ func TestStartNewGenerationPreservesSlug(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if fresh.Slug == nil || *fresh.Slug != pinned {
+		if !fresh.Slug.Valid || fresh.Slug.String != pinned {
 			t.Fatalf("slug after new generation = %v, want %q", fresh.Slug, pinned)
 		}
 	})

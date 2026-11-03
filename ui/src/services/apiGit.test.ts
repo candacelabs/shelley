@@ -36,7 +36,7 @@ await run("getGitDiffs requests an explicit commit", async () => {
     },
   );
   assert(
-    requestedUrl === "/api/git/diffs?cwd=%2Ftmp%2Fa+repo&commit=abc1234",
+    requestedUrl === "api/git/diffs?cwd=%2Ftmp%2Fa+repo&commit=abc1234",
     `url = ${requestedUrl}`,
   );
 });
@@ -54,7 +54,7 @@ await run("getGitTourStatus requests the durable worker state", async () => {
     },
   );
   assert(
-    requestedUrl === "/api/git/tour/status?cwd=%2Ftmp%2Fa+repo&hash=abc1234",
+    requestedUrl === "api/git/tour/status?cwd=%2Ftmp%2Fa+repo&hash=abc1234",
     `url = ${requestedUrl}`,
   );
 });
@@ -76,7 +76,7 @@ await run("requestGitTour sends the built-in command with its worktree", async (
       assert(status.status === "building", `status = ${status.status}`);
     },
   );
-  assert(requestedUrl === "/api/conversation/conversation/chat", `url = ${requestedUrl}`);
+  assert(requestedUrl === "api/conversation/conversation/chat", `url = ${requestedUrl}`);
   const body = JSON.parse(requestedBody) as { message: string };
   assert(body.message === "/tour abc1234\n/tmp/a repo", `message = ${body.message}`);
 });

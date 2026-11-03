@@ -45,7 +45,7 @@ func TestEnhanceSearchWithoutExeDevEmail(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if model := response.Conversation.Model; model == nil || *model != "local-default" {
+	if model := response.Conversation.Model; !model.Valid || model.String != "local-default" {
 		t.Fatalf("search model = %v, want local-default", model)
 	}
 	message, err := searchInitialMessage("font", nil, nil)

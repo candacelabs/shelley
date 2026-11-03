@@ -137,11 +137,11 @@ func (s *Server) handleSubagentUsage(w http.ResponseWriter, r *http.Request, con
 	}
 	for _, row := range rows {
 		model, url := "", ""
-		if row.ModelName != nil {
-			model = *row.ModelName
+		if row.ModelName.Valid {
+			model = row.ModelName.String
 		}
-		if row.LlmApiUrl != nil {
-			url = *row.LlmApiUrl
+		if row.LlmApiUrl.Valid {
+			url = row.LlmApiUrl.String
 		}
 		fold(model, url, row.InputTokens, row.CacheCreationInputTokens, row.CacheReadInputTokens, row.OutputTokens, row.CostUsd)
 	}

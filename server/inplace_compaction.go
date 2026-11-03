@@ -82,10 +82,10 @@ func trimmedToolOutputText(conversationID string, sequenceID int64) string {
 
 func decodeInPlaceCompaction(msg generated.Message) (db.InPlaceCompaction, error) {
 	var c db.InPlaceCompaction
-	if msg.UserData == nil {
+	if !msg.UserData.Valid {
 		return c, fmt.Errorf("in-place compaction %s has no user data", msg.MessageID)
 	}
-	if err := json.Unmarshal([]byte(*msg.UserData), &c); err != nil {
+	if err := json.Unmarshal([]byte(msg.UserData.String), &c); err != nil {
 		return c, fmt.Errorf("decode in-place compaction %s: %w", msg.MessageID, err)
 	}
 	return c, nil

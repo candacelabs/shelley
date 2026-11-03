@@ -492,19 +492,19 @@ func (cm *ConversationManager) Hydrate(ctx context.Context) error {
 	// Load cwd from conversation if available - must happen before generating system prompt
 	// so that the system prompt includes guidance files from the context directory
 	cwd := ""
-	if conversation.Cwd != nil {
-		cwd = *conversation.Cwd
+	if conversation.Cwd.Valid {
+		cwd = conversation.Cwd.String
 	}
 	cm.cwd = cwd
 
-	if conversation.Slug != nil {
-		cm.slug = *conversation.Slug
+	if conversation.Slug.Valid {
+		cm.slug = conversation.Slug.String
 	}
 
 	// Load model from conversation if available
 	var modelID string
-	if conversation.Model != nil {
-		modelID = *conversation.Model
+	if conversation.Model.Valid {
+		modelID = conversation.Model.String
 	}
 	cm.toolSetConfig.ModelID = modelID
 
@@ -654,7 +654,7 @@ func (cm *ConversationManager) acceptUserMessage(ctx context.Context, service ll
 		return false, "", fmt.Errorf("turn-start recorder returned no message")
 	}
 	if (turnUserDataFromContext(ctx) == nil || liveDeliveryIDFromContext(ctx) != "") && cm.showsSequenceIDs() && typedUserForLLM(message, nil) {
-		modelMessage, err = messageWithSequenceID(modelMessage, derefString(created.ExternalMessageID), created.SequenceID)
+		modelMessage, err = messageWithSequenceID(modelMessage, derefString(created.ExternalMessageID.Ptr()), created.SequenceID)
 		if err != nil {
 			return false, created.MessageID, fmt.Errorf("render user message: %w", err)
 		}
@@ -757,8 +757,8 @@ func (cm *ConversationManager) RetryLastLLMRequest(ctx context.Context) error {
 	// Read (never write) user_data to honor the retryable gate. A
 	// non-retryable error must not start a new turn.
 	ud := map[string]any{}
-	if latest.UserData != nil && *latest.UserData != "" {
-		if err := json.Unmarshal([]byte(*latest.UserData), &ud); err != nil {
+	if latest.UserData.Valid && latest.UserData.String != "" {
+		if err := json.Unmarshal([]byte(latest.UserData.String), &ud); err != nil {
 			return fmt.Errorf("failed to parse error message user_data: %w", err)
 		}
 	}
@@ -832,8 +832,8 @@ func (cm *ConversationManager) ContinueAfterRefusal(ctx context.Context, models 
 	// Only refusal errors offer the continue-on-another-model affordance. A
 	// generic (llm_request) error uses the ordinary Retry path instead.
 	ud := map[string]any{}
-	if latest.UserData != nil && *latest.UserData != "" {
-		if err := json.Unmarshal([]byte(*latest.UserData), &ud); err != nil {
+	if latest.UserData.Valid && latest.UserData.String != "" {
+		if err := json.Unmarshal([]byte(latest.UserData.String), &ud); err != nil {
 			return fmt.Errorf("failed to parse error message user_data: %w", err)
 		}
 	}
@@ -1040,7 +1040,7 @@ func (cm *ConversationManager) resumeInterruptedTurn(ctx context.Context, valida
 		if err != nil {
 			return fmt.Errorf("failed to load conversation before resuming: %w", err)
 		}
-		if conversation.AgentWorking || conversation.ParentConversationID != nil || !conversation.TurnInterrupted {
+		if conversation.AgentWorking || conversation.ParentConversationID.Valid || !conversation.TurnInterrupted {
 			return errInterruptedTurnNotApplicable
 		}
 		latest, err := cm.db.GetLatestActionableMessage(ctx, cm.conversationID)
@@ -2013,8 +2013,8 @@ func (cm *ConversationManager) contextItems(messages []generated.Message) ([]con
 		}
 		cm.applyDistillationContentOverride(&history[i].message, *src)
 		var userData []byte
-		if src.UserData != nil {
-			userData = []byte(*src.UserData)
+		if src.UserData.Valid {
+			userData = []byte(src.UserData.String)
 		}
 		wrapped, err := messageWithSenderProvenance(history[i].message, userData)
 		if err != nil {
@@ -2025,7 +2025,7 @@ func (cm *ConversationManager) contextItems(messages []generated.Message) ([]con
 			if err != nil {
 				return nil, nil, fmt.Errorf("origin sequence of message %s: %w", src.MessageID, err)
 			}
-			wrapped, err = messageWithSequenceID(wrapped, derefString(src.ExternalMessageID), origin)
+			wrapped, err = messageWithSequenceID(wrapped, derefString(src.ExternalMessageID.Ptr()), origin)
 			if err != nil {
 				return nil, nil, fmt.Errorf("render user message %s: %w", src.MessageID, err)
 			}

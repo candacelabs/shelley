@@ -191,8 +191,8 @@ func promptSkillCatalog(prompt generated.Message) ([]SkillCatalogEntry, error) {
 		return nil, err
 	}
 	var display SkillsResponse
-	if prompt.DisplayData != nil {
-		if err := json.Unmarshal([]byte(*prompt.DisplayData), &display); err != nil {
+	if prompt.DisplayData.Valid {
+		if err := json.Unmarshal([]byte(prompt.DisplayData.String), &display); err != nil {
 			return nil, fmt.Errorf("invalid system prompt metadata: %w", err)
 		}
 	}

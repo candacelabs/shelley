@@ -117,11 +117,11 @@ func TestSlugUsageAppendsRatherThanMutating(t *testing.T) {
 				continue
 			}
 			if _, seen := before[m.MessageID]; !seen {
-				before[m.MessageID] = snapshot{deref(m.OtherUsageData), deref(m.UsageData), deref(m.LlmData)}
+				before[m.MessageID] = snapshot{deref(m.OtherUsageData.Ptr()), deref(m.UsageData.Ptr()), deref(m.LlmData.Ptr())}
 			}
 		}
 		conv, err := database.GetConversationByID(ctx, convID)
-		return err == nil && conv != nil && conv.Slug != nil && *conv.Slug != ""
+		return err == nil && conv != nil && conv.Slug.Valid && conv.Slug.String != ""
 	})
 	if len(before) == 0 {
 		t.Fatal("no messages recorded before slug generation finished")
@@ -141,7 +141,7 @@ func TestSlugUsageAppendsRatherThanMutating(t *testing.T) {
 		if !existed {
 			continue // appended while we were waiting; fine, appends are legal
 		}
-		now := snapshot{deref(m.OtherUsageData), deref(m.UsageData), deref(m.LlmData)}
+		now := snapshot{deref(m.OtherUsageData.Ptr()), deref(m.UsageData.Ptr()), deref(m.LlmData.Ptr())}
 		if now != prev {
 			t.Errorf("message %s (seq %d) changed after being published:\n before: %+v\n after:  %+v\n"+
 				"message rows are append-only; record new data by appending a row",

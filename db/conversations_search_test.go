@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"github.com/guregu/null/v5"
 	"slices"
 	"strings"
 	"testing"
@@ -312,7 +313,7 @@ func TestSearchConversationsFTS(t *testing.T) {
 		snippets, err = generated.New(rx.Conn()).SearchConversationsFTSSnippets(ctx, generated.SearchConversationsFTSSnippetsParams{
 			MarkStart: SnippetMarkStart,
 			MarkEnd:   SnippetMarkEnd,
-			FtsMatch:  &match,
+			FtsMatch:  null.StringFrom(match),
 			ConvIds:   []string{active.ConversationID, archived.ConversationID},
 		})
 		return err

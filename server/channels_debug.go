@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/guregu/null/v5"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -132,10 +133,10 @@ func (s *Server) debugChannelEndpoint(chatID string) string {
 // chatID's stored endpoint.
 func (s *Server) debugGatewayAuthorized(r *http.Request, chatID, token string) bool {
 	conv, err := s.debugChatConversation(r, chatID)
-	if err != nil || conv.ExternalEndpoint == nil {
+	if err != nil || !conv.ExternalEndpoint.Valid {
 		return false
 	}
-	u, err := url.Parse(*conv.ExternalEndpoint)
+	u, err := url.Parse(conv.ExternalEndpoint.String)
 	return err == nil && subtle.ConstantTimeCompare([]byte(u.Path), []byte(debugGatewayPath(chatID, token))) == 1
 }
 
@@ -143,7 +144,7 @@ func (s *Server) debugGatewayAuthorized(r *http.Request, chatID, token string) b
 func (s *Server) debugChatConversation(r *http.Request, chatID string) (generated.Conversation, error) {
 	var conv generated.Conversation
 	err := s.db.Queries(r.Context(), func(q *generated.Queries) (err error) {
-		conv, err = q.GetConversationByExternalID(r.Context(), &chatID)
+		conv, err = q.GetConversationByExternalID(r.Context(), null.StringFrom(chatID))
 		return err
 	})
 	return conv, err
@@ -288,8 +289,8 @@ func (s *Server) handleDebugChannelsList(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		views[i].ConversationID = conv.ConversationID
-		if conv.Slug != nil {
-			views[i].Slug = *conv.Slug
+		if conv.Slug.Valid {
+			views[i].Slug = conv.Slug.String
 		}
 	}
 	w.Header().Set("Cache-Control", "no-store")

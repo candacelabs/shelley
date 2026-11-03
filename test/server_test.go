@@ -262,8 +262,8 @@ func TestServerEndToEnd(t *testing.T) {
 		}
 
 		// Verify initially no slug
-		if conv.Slug != nil {
-			t.Fatalf("Expected no initial slug, got: %v", *conv.Slug)
+		if conv.Slug.Valid {
+			t.Fatalf("Expected no initial slug, got: %v", conv.Slug.String)
 		}
 
 		// Send a message which should trigger slug generation
@@ -304,8 +304,8 @@ func TestServerEndToEnd(t *testing.T) {
 				continue
 			}
 
-			if updatedConv.Slug != nil {
-				t.Logf("Slug generated successfully: %s", *updatedConv.Slug)
+			if updatedConv.Slug.Valid {
+				t.Logf("Slug generated successfully: %s", updatedConv.Slug.String)
 				return
 			}
 		}
@@ -603,7 +603,7 @@ func TestSlugEndToEnd(t *testing.T) {
 		t.Errorf("Expected conversation ID %s, got %s", conv.ConversationID, retrievedBySlug.ConversationID)
 	}
 
-	if retrievedBySlug.Slug == nil || *retrievedBySlug.Slug != testSlug {
+	if !retrievedBySlug.Slug.Valid || retrievedBySlug.Slug.String != testSlug {
 		t.Errorf("Expected slug %s, got %v", testSlug, retrievedBySlug.Slug)
 	}
 
@@ -1275,7 +1275,7 @@ func TestSubagentEndToEnd(t *testing.T) {
 	// Verify the subagent has the expected slug (or a suffixed version)
 	foundExpectedSlug := false
 	for _, sub := range subagents {
-		if sub.Slug != nil && strings.HasPrefix(*sub.Slug, "test-worker") {
+		if sub.Slug.Valid && strings.HasPrefix(sub.Slug.String, "test-worker") {
 			foundExpectedSlug = true
 			break
 		}
@@ -1286,7 +1286,7 @@ func TestSubagentEndToEnd(t *testing.T) {
 
 	// Verify the subagent has a parent_conversation_id set
 	for _, sub := range subagents {
-		if sub.ParentConversationID == nil || *sub.ParentConversationID != parentConvID {
+		if !sub.ParentConversationID.Valid || sub.ParentConversationID.String != parentConvID {
 			t.Errorf("Subagent %s has wrong parent_conversation_id: %v", sub.ConversationID, sub.ParentConversationID)
 		}
 	}

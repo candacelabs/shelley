@@ -7,16 +7,11 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
-	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
-	"os"
-	"path/filepath"
-	"regexp"
+	"github.com/guregu/null/v5"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -25,11 +20,8 @@ import (
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
-
-//go:embed schema/*.sql
-var schemaFS embed.FS
 
 // GenerateConversationID generates a conversation ID in the format "cXXXXXX"
 // where X are random alphanumeric characters
@@ -63,68 +55,47 @@ type DB struct {
 	path string
 }
 
+// Schema is the PostgreSQL schema holding Shelley's tables, which csf's
+// migration 057 creates in csf's TimescaleDB.
+const Schema = "shelley"
+
 // Config holds database configuration
 type Config struct {
-	DSN string // Data Source Name for SQLite database
+	// DSN is the PostgreSQL connection string of csf's database.
+	DSN string
+	// Dir is where Shelley keeps files that outlive a restart (the database
+	// is in PostgreSQL, so no longer next to them).
+	Dir string
 }
 
-// New creates a new database connection with the given configuration
+// New opens Shelley's store: schema shelley of the PostgreSQL database at
+// cfg.DSN, through one writer and three reader connections.
 func New(cfg Config) (*DB, error) {
 	if cfg.DSN == "" {
 		return nil, fmt.Errorf("database DSN cannot be empty")
 	}
-
-	if cfg.DSN == ":memory:" {
-		return nil, fmt.Errorf(":memory: database not supported (requires multiple connections); use a temp file")
-	}
-
-	// Plain filenames may include driver options. Leave file: URI handling
-	// (including its directory requirements) to SQLite.
-	filename, _, _ := strings.Cut(cfg.DSN, "?")
-	if !strings.HasPrefix(filename, "file:") {
-		dir := filepath.Dir(filename)
-		if dir != "." && dir != "" {
-			if err := os.MkdirAll(dir, 0o755); err != nil {
-				return nil, fmt.Errorf("failed to create database directory: %w", err)
-			}
-		}
-	}
-
-	// Create connection pool with 3 readers
-	dsn := cfg.DSN
-	if !strings.Contains(dsn, "?") {
-		dsn += "?_foreign_keys=on"
-	} else if !strings.Contains(dsn, "_foreign_keys") {
-		dsn += "&_foreign_keys=on"
-	}
-
-	pool, err := NewPool(dsn, 3)
+	pool, err := NewPool(cfg.DSN, 3)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create connection pool: %w", err)
 	}
-
-	// Ask the opened connection, not the DSN: SQLite resolves relative paths,
-	// URI escaping/options and symlinks. Keep this instance-local and stable
-	// even if the process changes working directory later.
-	var path string
-	if err := pool.Rx(context.Background(), func(ctx context.Context, rx *Rx) error {
-		return rx.QueryRow("SELECT file FROM pragma_database_list WHERE name = 'main'").Scan(&path)
-	}); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("database path: %w", err)
-	}
-	if path == "" {
-		pool.Close()
-		return nil, fmt.Errorf("database must be backed by a filesystem file")
-	}
-
-	return &DB{
-		pool: pool,
-		path: path,
-	}, nil
+	return &DB{pool: pool, path: cfg.Dir}, nil
 }
 
-// Path returns the filesystem path of this instance's main SQLite database.
+// NewFromDB opens Shelley's store over database, a PostgreSQL connection pool
+// its caller owns and keeps open (csf passes its own); dir is where Shelley
+// keeps its files.
+func NewFromDB(database *sql.DB, dir string) (*DB, error) {
+	if database == nil {
+		return nil, fmt.Errorf("database cannot be nil")
+	}
+	pool, err := NewPoolFromDB(database, 3)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create connection pool: %w", err)
+	}
+	return &DB{pool: pool, path: dir}, nil
+}
+
+// Path is the directory Shelley keeps its own files in (Config.Dir).
 func (db *DB) Path() string { return db.path }
 
 // Close closes the database connection pool
@@ -134,111 +105,24 @@ func (db *DB) Close() error {
 
 // Migrate runs the database migrations.
 //
-// Migrations are tracked by filename. Two migration files may share a
-// numeric prefix as long as their full names differ; this keeps
-// concurrent feature branches that both grab "the next number" from
-// silently skipping each other's migrations after merge. (The earlier
-// implementation keyed on number, and a renumber-on-rebase could leave
-// production databases with a column missing because the runner thought
-// it had already executed something with that number.)
+// Migrate checks that Shelley's schema is in place. csf's migration 057
+// creates it; Shelley runs no migrations of its own.
 func (db *DB) Migrate(ctx context.Context) error {
-	// Read and validate migration files.
-	entries, err := schemaFS.ReadDir("schema")
-	if err != nil {
-		return fmt.Errorf("failed to read schema directory: %w", err)
-	}
-
-	migrationPattern := regexp.MustCompile(`^(\d{3})-.*\.sql$`)
-	type migration struct {
-		name   string
-		number int
-	}
-	var migrations []migration
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
+	if err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
+		var found bool
+		if err := rx.QueryRow("SELECT to_regclass('" + Schema + ".conversations') IS NOT NULL").Scan(&found); err != nil {
+			return fmt.Errorf("check schema %s: %w", Schema, err)
 		}
-		matches := migrationPattern.FindStringSubmatch(entry.Name())
-		if matches == nil {
-			continue
+		if !found {
+			return fmt.Errorf("schema %s has no conversations table: run csf's migrations (057)", Schema)
 		}
-		num, err := strconv.Atoi(matches[1])
-		if err != nil {
-			return fmt.Errorf("failed to parse migration number from %s: %w", entry.Name(), err)
-		}
-		migrations = append(migrations, migration{name: entry.Name(), number: num})
-	}
-
-	// Sort by (number, name) so renumbered/sibling migrations have a stable order.
-	sort.Slice(migrations, func(i, j int) bool {
-		if migrations[i].number != migrations[j].number {
-			return migrations[i].number < migrations[j].number
-		}
-		return migrations[i].name < migrations[j].name
-	})
-
-	// Load the names of already-applied migrations.
-	executed := make(map[string]bool)
-	var tableName string
-	err = db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
-		row := rx.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='migrations'")
-		return row.Scan(&tableName)
-	})
-	if err == nil {
-		err = db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
-			rows, err := rx.Query("SELECT migration_name FROM migrations")
-			if err != nil {
-				return fmt.Errorf("failed to query executed migrations: %w", err)
-			}
-			defer rows.Close()
-			for rows.Next() {
-				var name string
-				if err := rows.Scan(&name); err != nil {
-					return fmt.Errorf("failed to scan migration name: %w", err)
-				}
-				executed[name] = true
-			}
-			return rows.Err()
-		})
-		if err != nil {
-			return fmt.Errorf("failed to load executed migrations: %w", err)
-		}
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		slog.Info("migrations table not found, running all migrations")
-	}
-
-	for _, m := range migrations {
-		if executed[m.name] {
-			continue
-		}
-		slog.Info("running migration", "file", m.name, "number", m.number)
-		if err := db.runMigration(ctx, m.name, m.number); err != nil {
-			return err
-		}
-	}
-
-	return db.updateBuiltinProfiles(ctx)
-}
-
-// runMigration executes a single migration file within a transaction,
-// including recording it in the migrations table.
-func (db *DB) runMigration(ctx context.Context, filename string, migrationNumber int) error {
-	content, err := schemaFS.ReadFile("schema/" + filename)
-	if err != nil {
-		return fmt.Errorf("failed to read migration file %s: %w", filename, err)
-	}
-
-	return db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
-		if _, err := tx.Exec(string(content)); err != nil {
-			return fmt.Errorf("failed to execute migration %s: %w", filename, err)
-		}
-
-		if _, err := tx.Exec("INSERT INTO migrations (migration_number, migration_name) VALUES (?, ?)", migrationNumber, filename); err != nil {
-			return fmt.Errorf("failed to record migration %s in migrations table: %w", filename, err)
-		}
-
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	// The built-in profiles are rows Shelley writes and keeps current on each
+	// start, as its own migration runner did after its last migration.
+	return db.updateBuiltinProfiles(ctx)
 }
 
 // Pool returns the underlying connection pool for advanced operations
@@ -246,19 +130,8 @@ func (db *DB) Pool() *Pool {
 	return db.pool
 }
 
-// Checkpoint runs a truncating WAL checkpoint, flushing the write-ahead log
-// back into the main database file and shrinking the -wal file on disk.
-//
-// In WAL mode SQLite's default auto-checkpoint is PASSIVE: it copies committed
-// frames into the main db but never shrinks the -wal file, which therefore
-// grows to (and stays at) its high-water mark. Run this periodically and at
-// startup to keep the -wal file bounded.
-func (db *DB) Checkpoint(ctx context.Context) error {
-	if err := db.pool.Exec(ctx, "PRAGMA wal_checkpoint(TRUNCATE);"); err != nil {
-		return fmt.Errorf("wal checkpoint: %w", err)
-	}
-	return nil
-}
+// Checkpoint is a no-op: PostgreSQL manages its own write-ahead log.
+func (db *DB) Checkpoint(ctx context.Context) error { return nil }
 
 // WithTx runs a function within a database transaction
 func (db *DB) WithTx(ctx context.Context, fn func(*generated.Queries) error) error {
@@ -449,10 +322,10 @@ func (db *DB) CreateConversation(ctx context.Context, slug *string, userInitiate
 		q := generated.New(tx.Conn())
 		conversation, err = q.CreateConversation(ctx, generated.CreateConversationParams{
 			ConversationID:      conversationID,
-			Slug:                slug,
+			Slug:                null.StringFromPtr(slug),
 			UserInitiated:       userInitiated,
-			Cwd:                 cwd,
-			Model:               model,
+			Cwd:                 null.StringFromPtr(cwd),
+			Model:               null.StringFromPtr(model),
 			ConversationOptions: string(optsJSON),
 		})
 		return err
@@ -480,10 +353,10 @@ func (db *DB) CreateChannelConversation(ctx context.Context, externalID, endpoin
 	err = db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
 		conversation, err = generated.New(tx.Conn()).CreateChannelConversation(ctx, generated.CreateChannelConversationParams{
 			ConversationID:         conversationID,
-			Model:                  &model,
+			Model:                  null.StringFrom(model),
 			ConversationOptions:    string(optsJSON),
-			ExternalConversationID: &externalID,
-			ExternalEndpoint:       ep,
+			ExternalConversationID: null.StringFrom(externalID),
+			ExternalEndpoint:       null.StringFromPtr(ep),
 		})
 		return err
 	})
@@ -508,9 +381,9 @@ func (db *DB) CreateDraftConversation(ctx context.Context, cwd, model *string, o
 		q := generated.New(tx.Conn())
 		conversation, err = q.CreateDraftConversation(ctx, generated.CreateDraftConversationParams{
 			ConversationID:      conversationID,
-			Slug:                nil,
-			Cwd:                 cwd,
-			Model:               model,
+			Slug:                null.String{},
+			Cwd:                 null.StringFromPtr(cwd),
+			Model:               null.StringFromPtr(model),
 			ConversationOptions: string(optsJSON),
 			Draft:               draft,
 		})
@@ -532,9 +405,9 @@ func (db *DB) UpdateDraft(ctx context.Context, conversationID string, draft, mod
 		var err error
 		conv, err = q.UpdateConversationDraft(ctx, generated.UpdateConversationDraftParams{
 			ConversationID: conversationID,
-			Draft:          draft,
-			Model:          model,
-			Cwd:            cwd,
+			Draft:          null.StringFromPtr(draft),
+			Model:          null.StringFromPtr(model),
+			Cwd:            null.StringFromPtr(cwd),
 		})
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrConversationNotDraft
@@ -573,8 +446,8 @@ func (db *DB) PromoteDraft(ctx context.Context, conversationID string, cwd, mode
 		// race, the overrides must not touch the now-active conversation.
 		if _, err := q.UpdateConversationDraft(ctx, generated.UpdateConversationDraftParams{
 			ConversationID: conversationID,
-			Model:          model,
-			Cwd:            cwd,
+			Model:          null.StringFromPtr(model),
+			Cwd:            null.StringFromPtr(cwd),
 		}); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrConversationNotDraft
@@ -923,7 +796,7 @@ func (db *DB) GetConversationBySlug(ctx context.Context, slug string) (*generate
 	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
 		q := generated.New(rx.Conn())
 		var err error
-		conversation, err = q.GetConversationBySlug(ctx, &slug)
+		conversation, err = q.GetConversationBySlug(ctx, null.StringFrom(slug))
 		return err
 	})
 	if err == sql.ErrNoRows {
@@ -971,32 +844,15 @@ func (db *DB) ConversationParticipants(ctx context.Context, conversationIDs []st
 	if len(conversationIDs) == 0 {
 		return out, nil
 	}
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(conversationIDs)), ",")
-	args := make([]any, len(conversationIDs))
-	for i, id := range conversationIDs {
-		args[i] = id
-	}
 	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
-		rows, err := rx.Conn().QueryContext(ctx, `
-			SELECT conversation_id, user_email, COUNT(*)
-			FROM messages
-			WHERE user_email IS NOT NULL AND user_email <> ''
-			  AND conversation_id IN (`+placeholders+`)
-			GROUP BY conversation_id, user_email
-			ORDER BY conversation_id, user_email`, args...)
+		rows, err := generated.New(rx.Conn()).ListConversationParticipants(ctx, conversationIDs)
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var id string
-			var participant ConversationParticipant
-			if err := rows.Scan(&id, &participant.Email, &participant.MessageCount); err != nil {
-				return err
-			}
-			out[id] = append(out[id], participant)
+		for _, row := range rows {
+			out[row.ConversationID] = append(out[row.ConversationID], ConversationParticipant{Email: row.UserEmail, MessageCount: row.MessageCount})
 		}
-		return rows.Err()
+		return nil
 	})
 	return out, err
 }
@@ -1113,7 +969,7 @@ func (db *DB) SearchConversations(ctx context.Context, query string, limit, offs
 	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
 		q := generated.New(rx.Conn())
 		rows, err := q.SearchConversations(ctx, generated.SearchConversationsParams{
-			Column1: queryPtr,
+			Column1: null.StringFromPtr(queryPtr),
 			Limit:   limit,
 			Offset:  offset,
 		})
@@ -1140,7 +996,7 @@ func (db *DB) SearchConversationsWithMessages(ctx context.Context, query string,
 	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
 		q := generated.New(rx.Conn())
 		rows, err := q.SearchConversationsWithMessages(ctx, generated.SearchConversationsWithMessagesParams{
-			Query:  queryPtr,
+			Query:  null.StringFromPtr(queryPtr),
 			Limit:  limit,
 			Offset: offset,
 		})
@@ -1217,8 +1073,8 @@ func (db *DB) SearchConversationsFTS(ctx context.Context, query string, archived
 		q := generated.New(rx.Conn())
 		convs, err := q.SearchConversationsFTSList(ctx, generated.SearchConversationsFTSListParams{
 			Archived: archived,
-			SlugLike: &slugLike,
-			FtsMatch: &ftsMatch,
+			SlugLike: null.StringFrom(slugLike),
+			FtsMatch: null.StringFrom(ftsMatch),
 			Limit:    limit,
 			Offset:   offset,
 		})
@@ -1241,7 +1097,7 @@ func (db *DB) SearchConversationsFTS(ctx context.Context, query string, archived
 		snipRows, err := q.SearchConversationsFTSSnippets(ctx, generated.SearchConversationsFTSSnippetsParams{
 			MarkStart: SnippetMarkStart,
 			MarkEnd:   SnippetMarkEnd,
-			FtsMatch:  &ftsMatch,
+			FtsMatch:  null.StringFrom(ftsMatch),
 			ConvIds:   convIDs,
 		})
 		if err != nil {
@@ -1302,7 +1158,7 @@ func (db *DB) UpdateConversationSlug(ctx context.Context, conversationID, slug s
 		q := generated.New(tx.Conn())
 		var err error
 		conversation, err = q.UpdateConversationSlug(ctx, generated.UpdateConversationSlugParams{
-			Slug:           &slug,
+			Slug:           null.StringFrom(slug),
 			ConversationID: conversationID,
 		})
 		return err
@@ -1323,12 +1179,12 @@ func (db *DB) SetConversationSlugIfUnset(ctx context.Context, conversationID, sl
 		if err != nil {
 			return err
 		}
-		if current.Slug != nil && *current.Slug != "" {
+		if current.Slug.Valid && current.Slug.String != "" {
 			conversation = current
 			return nil
 		}
 		conversation, err = q.UpdateConversationSlug(ctx, generated.UpdateConversationSlugParams{
-			Slug:           &slug,
+			Slug:           null.StringFrom(slug),
 			ConversationID: conversationID,
 		})
 		if err == nil {
@@ -1485,11 +1341,11 @@ func interruptionMetadataFlag(value any) bool {
 }
 
 func isInterruptionBookkeeping(message generated.Message) bool {
-	if message.UserData == nil || *message.UserData == "" {
+	if !message.UserData.Valid || message.UserData.String == "" {
 		return false
 	}
 	var data map[string]any
-	if err := json.Unmarshal([]byte(*message.UserData), &data); err != nil {
+	if err := json.Unmarshal([]byte(message.UserData.String), &data); err != nil {
 		return false
 	}
 	return data["distill_status"] != nil || interruptionMetadataFlag(data["distilled"]) || interruptionMetadataFlag(data["cwd_change"])
@@ -1507,13 +1363,13 @@ func LatestTurnEndedWithAgent(messages []generated.Message, currentGeneration in
 		}
 		switch MessageType(message.Type) {
 		case MessageTypeAgent:
-			if message.LlmData == nil {
+			if !message.LlmData.Valid {
 				return false
 			}
 			var data struct {
 				EndOfTurn bool `json:"EndOfTurn"`
 			}
-			return json.Unmarshal([]byte(*message.LlmData), &data) == nil && data.EndOfTurn
+			return json.Unmarshal([]byte(message.LlmData.String), &data) == nil && data.EndOfTurn
 		case MessageTypeUser, MessageTypeTool, MessageTypeError:
 			// An EOT error may be followed by Retry(), which deliberately adds
 			// no new message. working=true + terminal error is therefore valid
@@ -1529,7 +1385,7 @@ func LatestTurnEndedWithAgent(messages []generated.Message, currentGeneration in
 // subagents. Other children are owned by their parent (BTW readers) or by
 // their own recovery (transcription and commit-tour workers).
 func upgradeResumable(conversation generated.Conversation) bool {
-	if conversation.ParentConversationID == nil {
+	if !conversation.ParentConversationID.Valid {
 		return true
 	}
 	return !conversation.UserInitiated && ParseConversationOptions(conversation.ConversationOptions).Kind == ""
@@ -1626,7 +1482,7 @@ func (db *DB) ConsumeResumeAfterUpgrade(ctx context.Context) ([]UpgradeResume, e
 			// Managed children already project an idle unfinished turn as
 			// interrupted in the BTW UI. Their parent owns their lifecycle.
 			// Clear a hidden upgrade-resume claim a crashed process left.
-			if conversation.ParentConversationID != nil {
+			if conversation.ParentConversationID.Valid {
 				if err := q.SetConversationTurnInterrupted(ctx, generated.SetConversationTurnInterruptedParams{
 					TurnInterrupted: false,
 					ConversationID:  conversationID,
@@ -1667,7 +1523,7 @@ func (db *DB) UpdateConversationCwd(ctx context.Context, conversationID, cwd str
 	return db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
 		q := generated.New(tx.Conn())
 		_, err := q.UpdateConversationCwd(ctx, generated.UpdateConversationCwdParams{
-			Cwd:            &cwd,
+			Cwd:            null.StringFrom(cwd),
 			ConversationID: conversationID,
 		})
 		return err
@@ -1680,7 +1536,7 @@ func (db *DB) UpdateConversationModel(ctx context.Context, conversationID, model
 	return db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
 		q := generated.New(tx.Conn())
 		return q.UpdateConversationModel(ctx, generated.UpdateConversationModelParams{
-			Model:          &model,
+			Model:          null.StringFrom(model),
 			ConversationID: conversationID,
 		})
 	})
@@ -1691,7 +1547,7 @@ func (db *DB) ForceUpdateConversationModel(ctx context.Context, conversationID, 
 	return db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
 		q := generated.New(tx.Conn())
 		return q.ForceUpdateConversationModel(ctx, generated.ForceUpdateConversationModelParams{
-			Model:          &model,
+			Model:          null.StringFrom(model),
 			ConversationID: conversationID,
 		})
 	})
@@ -1892,16 +1748,16 @@ func insertMessageTx(ctx context.Context, q *generated.Queries, params CreateMes
 		SequenceID:          sequenceID,
 		Generation:          conversation.CurrentGeneration,
 		Type:                string(params.Type),
-		LlmData:             llmDataJSON,
-		UserData:            userDataJSON,
-		UsageData:           usageDataJSON,
-		DisplayData:         displayDataJSON,
+		LlmData:             null.StringFromPtr(llmDataJSON),
+		UserData:            null.StringFromPtr(userDataJSON),
+		UsageData:           null.StringFromPtr(usageDataJSON),
+		DisplayData:         null.StringFromPtr(displayDataJSON),
 		ExcludedFromContext: params.ExcludedFromContext,
-		LlmApiUrl:           nullableString(params.LLMAPIURL),
-		ModelName:           nullableString(params.ModelName),
-		UserEmail:           nullableString(params.UserEmail),
-		OtherUsageData:      otherUsageDataJSON,
-		ExternalMessageID:   nullableString(params.ExternalMessageID),
+		LlmApiUrl:           null.StringFromPtr(nullableString(params.LLMAPIURL)),
+		ModelName:           null.StringFromPtr(nullableString(params.ModelName)),
+		UserEmail:           null.StringFromPtr(nullableString(params.UserEmail)),
+		OtherUsageData:      null.StringFromPtr(otherUsageDataJSON),
+		ExternalMessageID:   null.StringFromPtr(nullableString(params.ExternalMessageID)),
 		CreatedAt:           sqliteTimeArg(params.CreatedAt),
 	})
 	if err != nil {
@@ -2040,7 +1896,7 @@ func (db *DB) CreateUsageMessage(ctx context.Context, conversationID string, oth
 			SequenceID:          sequenceID,
 			Generation:          conversation.CurrentGeneration,
 			Type:                string(MessageTypeSlug),
-			OtherUsageData:      otherUsageJSON,
+			OtherUsageData:      null.StringFromPtr(otherUsageJSON),
 			ExcludedFromContext: true,
 		})
 		return err
@@ -2108,7 +1964,7 @@ func (db *DB) CreateWarningMessage(ctx context.Context, conversationID, text str
 			SequenceID:          sequenceID,
 			Generation:          conversation.CurrentGeneration,
 			Type:                string(MessageTypeWarning),
-			UserData:            userDataJSON,
+			UserData:            null.StringFromPtr(userDataJSON),
 			ExcludedFromContext: true,
 		})
 		if err != nil {
@@ -2342,7 +2198,7 @@ func (db *DB) SearchArchivedConversations(ctx context.Context, query string, lim
 		q := generated.New(rx.Conn())
 		var err error
 		conversations, err = q.SearchArchivedConversations(ctx, generated.SearchArchivedConversationsParams{
-			Column1: queryPtr,
+			Column1: null.StringFromPtr(queryPtr),
 			Limit:   limit,
 			Offset:  offset,
 		})
@@ -2425,7 +2281,7 @@ func (db *DB) ForkConversation(ctx context.Context, sourceConversationID string,
 		}
 		conversation, err = q.CreateConversation(ctx, generated.CreateConversationParams{
 			ConversationID:      conversationID,
-			Slug:                nil,
+			Slug:                null.String{},
 			UserInitiated:       true,
 			Cwd:                 source.Cwd,
 			Model:               source.Model,
@@ -2478,9 +2334,9 @@ func (db *DB) CreateSubagentConversation(ctx context.Context, slug, parentID str
 		q := generated.New(tx.Conn())
 		conversation, err = q.CreateSubagentConversation(ctx, generated.CreateSubagentConversationParams{
 			ConversationID:       conversationID,
-			Slug:                 &slug,
-			Cwd:                  cwd,
-			ParentConversationID: &parentID,
+			Slug:                 null.StringFrom(slug),
+			Cwd:                  null.StringFromPtr(cwd),
+			ParentConversationID: null.StringFrom(parentID),
 		})
 		return err
 	})
@@ -2495,7 +2351,7 @@ func (db *DB) GetSubagentUsage(ctx context.Context, parentID string) ([]generate
 	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
 		q := generated.New(rx.Conn())
 		var err error
-		rows, err = q.GetSubagentUsage(ctx, &parentID)
+		rows, err = q.GetSubagentUsage(ctx, null.StringFrom(parentID))
 		return err
 	})
 	return rows, err
@@ -2509,7 +2365,7 @@ func (db *DB) GetSubagentOtherUsage(ctx context.Context, parentID string) ([]gen
 	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
 		q := generated.New(rx.Conn())
 		var err error
-		rows, err = q.GetSubagentOtherUsage(ctx, &parentID)
+		rows, err = q.GetSubagentOtherUsage(ctx, null.StringFrom(parentID))
 		return err
 	})
 	return rows, err
@@ -2541,7 +2397,7 @@ func (db *DB) UpdateConversationParent(ctx context.Context, conversationID, pare
 		q := generated.New(tx.Conn())
 		var err error
 		conversation, err = q.UpdateConversationParent(ctx, generated.UpdateConversationParentParams{
-			ParentConversationID: &parentID,
+			ParentConversationID: null.StringFrom(parentID),
 			ConversationID:       conversationID,
 		})
 		return err
@@ -2555,7 +2411,7 @@ func (db *DB) GetSubagents(ctx context.Context, parentID string) ([]generated.Co
 	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
 		q := generated.New(rx.Conn())
 		var err error
-		conversations, err = q.GetSubagents(ctx, &parentID)
+		conversations, err = q.GetSubagents(ctx, null.StringFrom(parentID))
 		return err
 	})
 	return conversations, err
@@ -2568,8 +2424,8 @@ func (db *DB) GetConversationBySlugAndParent(ctx context.Context, slug, parentID
 		q := generated.New(rx.Conn())
 		var err error
 		conversation, err = q.GetConversationBySlugAndParent(ctx, generated.GetConversationBySlugAndParentParams{
-			Slug:                 &slug,
-			ParentConversationID: &parentID,
+			Slug:                 null.StringFrom(slug),
+			ParentConversationID: null.StringFrom(parentID),
 		})
 		return err
 	})
@@ -2593,7 +2449,7 @@ func (a *SubagentDBAdapter) GetOrCreateSubagentConversation(ctx context.Context,
 		return "", "", err
 	}
 	if existing != nil {
-		return existing.ConversationID, *existing.Slug, nil
+		return existing.ConversationID, existing.Slug.String, nil
 	}
 
 	// Slugs are unique across all conversations, so pick a free variant.

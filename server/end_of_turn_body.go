@@ -22,11 +22,11 @@ func finalResponseBody(messages []generated.Message) string {
 
 	// Pass 1: most recent message with text content wins.
 	for _, m := range messages {
-		if m.Type != string(db.MessageTypeAgent) || m.LlmData == nil {
+		if m.Type != string(db.MessageTypeAgent) || !m.LlmData.Valid {
 			continue
 		}
 		var llmMsg llm.Message
-		if err := json.Unmarshal([]byte(*m.LlmData), &llmMsg); err != nil {
+		if err := json.Unmarshal([]byte(m.LlmData.String), &llmMsg); err != nil {
 			continue
 		}
 		text := lastTextContent(llmMsg)
@@ -39,11 +39,11 @@ func finalResponseBody(messages []generated.Message) string {
 	// notification at least tells you what the agent was up to (e.g. a
 	// turn that ended on a `bash` tool call).
 	for _, m := range messages {
-		if m.Type != string(db.MessageTypeAgent) || m.LlmData == nil {
+		if m.Type != string(db.MessageTypeAgent) || !m.LlmData.Valid {
 			continue
 		}
 		var llmMsg llm.Message
-		if err := json.Unmarshal([]byte(*m.LlmData), &llmMsg); err != nil {
+		if err := json.Unmarshal([]byte(m.LlmData.String), &llmMsg); err != nil {
 			continue
 		}
 		if s := summarizeLastToolUse(llmMsg); s != "" {

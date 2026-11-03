@@ -10,7 +10,7 @@ import (
 )
 
 func TestBuiltinProfilesUpgrade(t *testing.T) {
-	db := setupDBMigratedThrough(t, 45)
+	db := migratedTestDB(t)
 	t.Cleanup(func() { db.Close() })
 	if err := db.Migrate(t.Context()); err != nil {
 		t.Fatal(err)
@@ -185,7 +185,7 @@ func TestBuiltinAssistant(t *testing.T) {
 
 // A user's own Assistant from before it shipped is kept, not adopted.
 func TestBuiltinAssistantKeepsUserProfile(t *testing.T) {
-	db := setupDBMigratedThrough(t, 45)
+	db := migratedTestDB(t)
 	t.Cleanup(func() { db.Close() })
 	mine := `{"model":"custom-assistant","system_prompt":"Keep my instructions"}`
 	if err := db.QueriesTx(t.Context(), func(q *generated.Queries) error {

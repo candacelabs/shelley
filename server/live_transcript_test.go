@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/guregu/null/v5"
 	"slices"
 	"strings"
 	"testing"
@@ -230,9 +231,9 @@ func dialogueRow(typ, text string, final bool, userData string) generated.Messag
 	}
 	data, _ := json.Marshal(llm.Message{Role: role, Content: []llm.Content{llm.StringContent(text)}, EndOfTurn: final})
 	raw := string(data)
-	row := generated.Message{Type: typ, LlmData: &raw}
+	row := generated.Message{Type: typ, LlmData: null.StringFrom(raw)}
 	if userData != "" {
-		row.UserData = &userData
+		row.UserData = null.StringFrom(userData)
 	}
 	return row
 }
@@ -248,7 +249,7 @@ func TestLiveDialogue(t *testing.T) {
 		dialogueRow("user", "BACKGROUND OUTPUT", false, `{"background_job_id":"job"}`),
 		dialogueRow("user", "MCP NOTICE", false, `{"mcp_server_change":"added"}`),
 		dialogueRow("agent", "internal progress", false, ""),
-		{Type: "user", LlmData: &toolRaw},
+		{Type: "user", LlmData: null.StringFrom(toolRaw)},
 		dialogueRow("agent", "Tests are fixed", true, ""),
 		dialogueRow("error", "INTERNAL ERROR", false, ""),
 		dialogueRow("user", "UNKNOWN MACHINE NOTICE", false, `{"future_notice":true}`),
@@ -276,7 +277,7 @@ func TestLiveDialogue(t *testing.T) {
 		t.Errorf("full text lost the exchange: %q", full)
 	}
 	bad := "not JSON"
-	if _, _, _, err := liveDialogue(generated.Message{Type: "agent", LlmData: &bad}); err == nil {
+	if _, _, _, err := liveDialogue(generated.Message{Type: "agent", LlmData: null.StringFrom(bad)}); err == nil {
 		t.Error("undecodable message is not an error")
 	}
 }

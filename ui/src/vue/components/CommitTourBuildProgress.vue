@@ -37,7 +37,7 @@
       >
         Retry
       </button>
-      <a v-if="status.worker_slug" :href="`/c/${status.worker_slug}`" target="_blank" rel="noopener"
+      <a v-if="status.worker_slug" :href="`c/${status.worker_slug}`" target="_blank" rel="noopener"
         >Build details ↗</a
       >
     </div>

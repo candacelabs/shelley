@@ -53,7 +53,7 @@ async function probeAuthentication(): Promise<boolean> {
   // exe.dev turns an unauthenticated request into a same-origin login
   // redirect. Manual redirects surface to fetch as an opaque response, while
   // an authenticated Shelley answers this cheap capability probe directly.
-  const response = await fetch("/api/upload/raw", {
+  const response = await fetch("api/upload/raw", {
     cache: "no-store",
     credentials: "same-origin",
     redirect: "manual",

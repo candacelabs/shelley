@@ -245,7 +245,7 @@ func TestForkGenerationIgnoresSlugMarker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(forkedMsgs) != 1 || forkedMsgs[0].ForkedFromMessageID == nil || *forkedMsgs[0].ForkedFromMessageID != gen1.MessageID {
+	if len(forkedMsgs) != 1 || !forkedMsgs[0].ForkedFromMessageID.Valid || forkedMsgs[0].ForkedFromMessageID.String != gen1.MessageID {
 		t.Errorf("forked messages = %+v, want the generation-1 user message; a slug marker "+
 			"must not decide which generation the fork copies", forkedMsgs)
 	}

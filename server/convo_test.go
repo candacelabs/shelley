@@ -143,7 +143,7 @@ func TestHydrateGeneratesSystemPromptWithSubagentTool(t *testing.T) {
 		t.Fatal("System message not found")
 	}
 
-	if systemMsg.DisplayData == nil {
+	if !systemMsg.DisplayData.Valid {
 		t.Fatal("System message has no display data")
 	}
 
@@ -152,7 +152,7 @@ func TestHydrateGeneratesSystemPromptWithSubagentTool(t *testing.T) {
 			Name string `json:"name"`
 		} `json:"tools"`
 	}
-	if err := json.Unmarshal([]byte(*systemMsg.DisplayData), &displayData); err != nil {
+	if err := json.Unmarshal([]byte(systemMsg.DisplayData.String), &displayData); err != nil {
 		t.Fatalf("Failed to unmarshal display data: %v", err)
 	}
 
@@ -207,7 +207,7 @@ func TestHydrateSystemPromptDisplayDataRespectsToolOverrides(t *testing.T) {
 	if systemMsg == nil {
 		t.Fatal("system message not found")
 	}
-	if systemMsg.DisplayData == nil {
+	if !systemMsg.DisplayData.Valid {
 		t.Fatal("system message has no display data")
 	}
 
@@ -216,7 +216,7 @@ func TestHydrateSystemPromptDisplayDataRespectsToolOverrides(t *testing.T) {
 			Name string `json:"name"`
 		} `json:"tools"`
 	}
-	if err := json.Unmarshal([]byte(*systemMsg.DisplayData), &displayData); err != nil {
+	if err := json.Unmarshal([]byte(systemMsg.DisplayData.String), &displayData); err != nil {
 		t.Fatalf("unmarshal display data: %v", err)
 	}
 

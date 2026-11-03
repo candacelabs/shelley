@@ -510,11 +510,11 @@ func TestQueuedTranscriptionPreservesFIFOAndVideoPaths(t *testing.T) {
 	}
 	positions := map[string]int{}
 	for i, row := range messages {
-		if row.LlmData == nil {
+		if !row.LlmData.Valid {
 			continue
 		}
 		var message llm.Message
-		if err := json.Unmarshal([]byte(*row.LlmData), &message); err != nil {
+		if err := json.Unmarshal([]byte(row.LlmData.String), &message); err != nil {
 			t.Fatal(err)
 		}
 		for _, content := range message.Content {
@@ -1001,11 +1001,11 @@ func TestQueuedTranscriptionRecoveryIsIdempotent(t *testing.T) {
 	}
 	count := 0
 	for _, message := range messages {
-		if message.Type != string(db.MessageTypeUser) || message.LlmData == nil {
+		if message.Type != string(db.MessageTypeUser) || !message.LlmData.Valid {
 			continue
 		}
 		var value llm.Message
-		if err := json.Unmarshal([]byte(*message.LlmData), &value); err != nil {
+		if err := json.Unmarshal([]byte(message.LlmData.String), &value); err != nil {
 			t.Fatal(err)
 		}
 		for _, content := range value.Content {

@@ -142,7 +142,7 @@ func hasCancelledMessage(t *testing.T, f *subagentDoneFixture) bool {
 		t.Fatalf("list subagent messages: %v", err)
 	}
 	for _, m := range msgs {
-		if m.LlmData != nil && strings.Contains(*m.LlmData, "[Operation cancelled]") {
+		if m.LlmData.Valid && strings.Contains(m.LlmData.String, "[Operation cancelled]") {
 			return true
 		}
 	}
@@ -179,12 +179,12 @@ func testSubagentBusy_DeliversMidTurn(t *testing.T) {
 	// The steering message is the parent's, like a prompt to an idle subagent.
 	steered := 0
 	for _, m := range listMessages(t, f.database, f.subagentID) {
-		if m.Type != string(db.MessageTypeUser) || m.LlmData == nil || !strings.Contains(*m.LlmData, "echo: steered") {
+		if m.Type != string(db.MessageTypeUser) || !m.LlmData.Valid || !strings.Contains(m.LlmData.String, "echo: steered") {
 			continue
 		}
 		steered++
 		if !fromParent(m) {
-			t.Fatalf("steering message user_data = %v, want the parent's provenance", derefString(m.UserData))
+			t.Fatalf("steering message user_data = %v, want the parent's provenance", derefString(m.UserData.Ptr()))
 		}
 	}
 	if steered != 1 {
@@ -240,7 +240,7 @@ func requireSteeredMidTurn(t *testing.T, f *subagentDoneFixture) {
 	}
 	steered := -1
 	for i, m := range msgs {
-		if m.Type == string(db.MessageTypeUser) && m.LlmData != nil && strings.Contains(*m.LlmData, "echo: steered") {
+		if m.Type == string(db.MessageTypeUser) && m.LlmData.Valid && strings.Contains(m.LlmData.String, "echo: steered") {
 			steered = i
 		}
 	}
@@ -248,7 +248,7 @@ func requireSteeredMidTurn(t *testing.T, f *subagentDoneFixture) {
 		t.Fatalf("steering message not recorded: %d messages", len(msgs))
 	}
 	var prev llm.Message
-	if err := json.Unmarshal([]byte(*msgs[steered-1].LlmData), &prev); err != nil {
+	if err := json.Unmarshal([]byte(msgs[steered-1].LlmData.String), &prev); err != nil {
 		t.Fatal(err)
 	}
 	if prev.Role != llm.MessageRoleUser || len(prev.Content) == 0 || prev.Content[0].Type != llm.ContentTypeToolResult {

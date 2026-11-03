@@ -48,11 +48,11 @@ func TestMessageOpenAIResponsesReasoningMetadataRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(messages) != 1 || messages[0].LlmData == nil {
+	if len(messages) != 1 || !messages[0].LlmData.Valid {
 		t.Fatalf("messages = %+v", messages)
 	}
 	var got llm.Message
-	if err := json.Unmarshal([]byte(*messages[0].LlmData), &got); err != nil {
+	if err := json.Unmarshal([]byte(messages[0].LlmData.String), &got); err != nil {
 		t.Fatal(err)
 	}
 	if got.Role != want.Role || len(got.Content) != 1 || got.Content[0].Text != want.Content[0].Text {
@@ -140,17 +140,17 @@ func TestMessageService_Create(t *testing.T) {
 
 			// Test JSON data marshalling
 			if tt.llmData != nil {
-				if msg.LlmData == nil {
+				if !msg.LlmData.Valid {
 					t.Error("Expected LLM data to be non-nil")
 				} else {
 					var unmarshalled map[string]interface{}
-					err := json.Unmarshal([]byte(*msg.LlmData), &unmarshalled)
+					err := json.Unmarshal([]byte(msg.LlmData.String), &unmarshalled)
 					if err != nil {
 						t.Errorf("Failed to unmarshal LLM data: %v", err)
 					}
 				}
 			} else {
-				if msg.LlmData != nil {
+				if msg.LlmData.Valid {
 					t.Error("Expected LLM data to be nil")
 				}
 			}
@@ -185,10 +185,10 @@ func TestMessageService_LLMModelColumns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateMessage() error = %v", err)
 	}
-	if agent.LlmApiUrl == nil || *agent.LlmApiUrl != "https://api.anthropic.com/v1/messages" {
+	if !agent.LlmApiUrl.Valid || agent.LlmApiUrl.String != "https://api.anthropic.com/v1/messages" {
 		t.Errorf("llm_api_url = %v, want anthropic URL", agent.LlmApiUrl)
 	}
-	if agent.ModelName == nil || *agent.ModelName != "claude-opus-4-7" {
+	if !agent.ModelName.Valid || agent.ModelName.String != "claude-opus-4-7" {
 		t.Errorf("model_name = %v, want claude-opus-4-7", agent.ModelName)
 	}
 
@@ -201,11 +201,11 @@ func TestMessageService_LLMModelColumns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateMessage() error = %v", err)
 	}
-	if user.LlmApiUrl != nil {
-		t.Errorf("llm_api_url = %v, want nil", *user.LlmApiUrl)
+	if user.LlmApiUrl.Valid {
+		t.Errorf("llm_api_url = %v, want nil", user.LlmApiUrl.String)
 	}
-	if user.ModelName != nil {
-		t.Errorf("model_name = %v, want nil", *user.ModelName)
+	if user.ModelName.Valid {
+		t.Errorf("model_name = %v, want nil", user.ModelName.String)
 	}
 }
 
@@ -660,11 +660,11 @@ func TestMessageUserEmailRoundTrip(t *testing.T) {
 	if len(messages) != 2 {
 		t.Fatalf("got %d messages, want 2", len(messages))
 	}
-	if messages[0].UserEmail == nil || *messages[0].UserEmail != "alice@example.com" {
+	if !messages[0].UserEmail.Valid || messages[0].UserEmail.String != "alice@example.com" {
 		t.Fatalf("message[0].UserEmail = %v, want alice@example.com", messages[0].UserEmail)
 	}
-	if messages[1].UserEmail != nil {
-		t.Fatalf("message[1].UserEmail = %v, want nil (empty stored as NULL)", *messages[1].UserEmail)
+	if messages[1].UserEmail.Valid {
+		t.Fatalf("message[1].UserEmail = %v, want nil (empty stored as NULL)", messages[1].UserEmail.String)
 	}
 
 	// Forking copies user_email onto the fork's copies.
@@ -679,10 +679,10 @@ func TestMessageUserEmailRoundTrip(t *testing.T) {
 	if len(forkedMsgs) != 2 {
 		t.Fatalf("got %d forked messages, want 2", len(forkedMsgs))
 	}
-	if forkedMsgs[0].UserEmail == nil || *forkedMsgs[0].UserEmail != "alice@example.com" {
+	if !forkedMsgs[0].UserEmail.Valid || forkedMsgs[0].UserEmail.String != "alice@example.com" {
 		t.Fatalf("forked message[0].UserEmail = %v, want alice@example.com", forkedMsgs[0].UserEmail)
 	}
-	if forkedMsgs[1].UserEmail != nil {
-		t.Fatalf("forked message[1].UserEmail = %v, want nil", *forkedMsgs[1].UserEmail)
+	if forkedMsgs[1].UserEmail.Valid {
+		t.Fatalf("forked message[1].UserEmail = %v, want nil", forkedMsgs[1].UserEmail.String)
 	}
 }

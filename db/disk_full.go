@@ -4,15 +4,18 @@ import (
 	"errors"
 	"syscall"
 
-	"modernc.org/sqlite"
-	sqlite3 "modernc.org/sqlite/lib"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// IsDiskFull reports whether err means SQLite or the OS ran out of disk space
-// (or quota).
+// sqlStateDiskFull is PostgreSQL's disk_full error (class 53, insufficient
+// resources).
+const sqlStateDiskFull = "53100"
+
+// IsDiskFull reports whether err means PostgreSQL or the OS ran out of disk
+// space (or quota).
 func IsDiskFull(err error) bool {
-	var se *sqlite.Error
-	if errors.As(err, &se) && se.Code()&0xff == sqlite3.SQLITE_FULL {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == sqlStateDiskFull {
 		return true
 	}
 	return errors.Is(err, syscall.ENOSPC) || errors.Is(err, syscall.EDQUOT)

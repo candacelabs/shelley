@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/guregu/null/v5"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -130,7 +131,7 @@ func TestSubagentUnreportedReplyReachesParent(t *testing.T) {
 	for _, m := range listMessages(t, database, child.ConversationID) {
 		switch m.Type {
 		case string(db.MessageTypeWarning):
-			warnings = append(warnings, derefString(m.UserData))
+			warnings = append(warnings, derefString(m.UserData.Ptr()))
 		case string(db.MessageTypeAgent):
 			msg, err := convertToLLMMessage(m)
 			if err != nil {
@@ -160,9 +161,9 @@ func TestOwesReport(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		row := generated.Message{Type: string(typ), LlmData: strPtr(string(data)), ExcludedFromContext: m.ExcludedFromContext}
+		row := generated.Message{Type: string(typ), LlmData: null.StringFromPtr(strPtr(string(data))), ExcludedFromContext: m.ExcludedFromContext}
 		if userData != "" {
-			row.UserData = &userData
+			row.UserData = null.StringFrom(userData)
 		}
 		return row
 	}
@@ -229,7 +230,7 @@ func TestSubagentReplyToUserStaysPut(t *testing.T) {
 	}
 	for _, m := range listMessages(t, database, child.ConversationID) {
 		if m.Type == string(db.MessageTypeWarning) {
-			t.Fatalf("child warned %q; the reply to the user was reported", derefString(m.UserData))
+			t.Fatalf("child warned %q; the reply to the user was reported", derefString(m.UserData.Ptr()))
 		}
 	}
 }
@@ -458,7 +459,7 @@ func childReports(t *testing.T, database *db.DB, conversationID string) (reports
 	for _, m := range listMessages(t, database, conversationID) {
 		switch m.Type {
 		case string(db.MessageTypeWarning):
-			warnings = append(warnings, derefString(m.UserData))
+			warnings = append(warnings, derefString(m.UserData.Ptr()))
 		case string(db.MessageTypeAgent):
 			msg, err := convertToLLMMessage(m)
 			if err != nil {
@@ -491,12 +492,12 @@ func backgroundJobNotice(job claudetool.BackgroundJob) string {
 }
 
 func parentMessage(parent *generated.Conversation, text string) string {
-	return `<parent_message conversation_id="` + parent.ConversationID + `" slug="` + derefString(parent.Slug) + `">` +
+	return `<parent_message conversation_id="` + parent.ConversationID + `" slug="` + derefString(parent.Slug.Ptr()) + `">` +
 		"\n" + xmlProvenanceText(text) + "\n</parent_message>"
 }
 
 func subagentMessage(child *generated.Conversation, text string) string {
-	return `<subagent_message conversation_id="` + child.ConversationID + `" slug="` + derefString(child.Slug) + `">` +
+	return `<subagent_message conversation_id="` + child.ConversationID + `" slug="` + derefString(child.Slug.Ptr()) + `">` +
 		"\n" + text + "\n</subagent_message>"
 }
 
@@ -505,10 +506,10 @@ func subagentTexts(t *testing.T, database *db.DB, conversationID string) []strin
 	t.Helper()
 	var texts []string
 	for _, m := range listMessages(t, database, conversationID) {
-		if m.Type != string(db.MessageTypeUser) || m.UserData == nil {
+		if m.Type != string(db.MessageTypeUser) || !m.UserData.Valid {
 			continue
 		}
-		if data, ok, err := parseSenderMessageUserData([]byte(*m.UserData)); err == nil && ok {
+		if data, ok, err := parseSenderMessageUserData([]byte(m.UserData.String)); err == nil && ok {
 			texts = append(texts, data.Text)
 		}
 	}

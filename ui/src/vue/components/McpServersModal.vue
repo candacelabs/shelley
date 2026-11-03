@@ -21,7 +21,7 @@
         </Button>
         <Button
           as="a"
-          href="/debug/mcp"
+          href="debug/mcp"
           target="_blank"
           rel="noopener"
           size="small"

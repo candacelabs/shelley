@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"github.com/guregu/null/v5"
 	"io"
 	"log/slog"
 	"net/http"
@@ -22,7 +23,7 @@ func agentMsg(t *testing.T, contents ...llm.Content) generated.Message {
 		t.Fatal(err)
 	}
 	s := string(data)
-	return generated.Message{Type: string(db.MessageTypeAgent), LlmData: &s}
+	return generated.Message{Type: string(db.MessageTypeAgent), LlmData: null.StringFrom(s)}
 }
 
 func TestFinalResponseBody_PrefersTextFromLatest(t *testing.T) {

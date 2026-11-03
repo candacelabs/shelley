@@ -104,11 +104,11 @@ func TestCancelWithPredictableModel(t *testing.T) {
 		}
 		// Check for assistant message with tool use
 		for _, msg := range messages {
-			if msg.Type != string(db.MessageTypeAgent) || msg.LlmData == nil {
+			if msg.Type != string(db.MessageTypeAgent) || !msg.LlmData.Valid {
 				continue
 			}
 			var llmMsg llm.Message
-			if err := json.Unmarshal([]byte(*msg.LlmData), &llmMsg); err != nil {
+			if err := json.Unmarshal([]byte(msg.LlmData.String), &llmMsg); err != nil {
 				continue
 			}
 			for _, content := range llmMsg.Content {
@@ -165,12 +165,12 @@ func TestCancelWithPredictableModel(t *testing.T) {
 	foundEndTurnMessage := false
 	for i := len(messages) - 1; i >= 0; i-- {
 		msg := messages[i]
-		if msg.LlmData == nil {
+		if !msg.LlmData.Valid {
 			continue
 		}
 
 		var llmMsg llm.Message
-		if err := json.Unmarshal([]byte(*msg.LlmData), &llmMsg); err != nil {
+		if err := json.Unmarshal([]byte(msg.LlmData.String), &llmMsg); err != nil {
 			continue
 		}
 
@@ -248,11 +248,11 @@ func TestCancelWithPredictableModel(t *testing.T) {
 		if msg.Type != string(db.MessageTypeAgent) {
 			continue
 		}
-		if msg.LlmData == nil {
+		if !msg.LlmData.Valid {
 			continue
 		}
 		var llmMsg llm.Message
-		if err := json.Unmarshal([]byte(*msg.LlmData), &llmMsg); err != nil {
+		if err := json.Unmarshal([]byte(msg.LlmData.String), &llmMsg); err != nil {
 			continue
 		}
 		for _, content := range llmMsg.Content {
@@ -363,11 +363,11 @@ func TestCancelDuringTextGeneration(t *testing.T) {
 	// Should NOT have a tool result message
 	for _, msg := range messages {
 		if msg.Type == string(db.MessageTypeUser) {
-			if msg.LlmData == nil {
+			if !msg.LlmData.Valid {
 				continue
 			}
 			var llmMsg llm.Message
-			if err := json.Unmarshal([]byte(*msg.LlmData), &llmMsg); err != nil {
+			if err := json.Unmarshal([]byte(msg.LlmData.String), &llmMsg); err != nil {
 				continue
 			}
 			for _, content := range llmMsg.Content {
@@ -528,11 +528,11 @@ func TestRetryAfterLLMFailure(t *testing.T) {
 			continue
 		}
 		foundErr = true
-		if m.UserData == nil {
+		if !m.UserData.Valid {
 			t.Fatalf("error message has nil user_data; want retryable=true")
 		}
 		var ud map[string]any
-		if err := json.Unmarshal([]byte(*m.UserData), &ud); err != nil {
+		if err := json.Unmarshal([]byte(m.UserData.String), &ud); err != nil {
 			t.Fatalf("unmarshal error user_data: %v", err)
 		}
 		if retryable, _ := ud["retryable"].(bool); !retryable {
@@ -689,11 +689,11 @@ func TestCancelMultiToolHTTPPersistsCompleteOrderedBatch(t *testing.T) {
 	}
 	var transcript []llm.Message
 	for _, message := range messages {
-		if message.LlmData == nil {
+		if !message.LlmData.Valid {
 			continue
 		}
 		var parsed llm.Message
-		if err := json.Unmarshal([]byte(*message.LlmData), &parsed); err == nil {
+		if err := json.Unmarshal([]byte(message.LlmData.String), &parsed); err == nil {
 			transcript = append(transcript, parsed)
 		}
 	}
@@ -834,11 +834,11 @@ func TestCancelSlowLoopWaitsForOrderedFinalization(t *testing.T) {
 		}
 		var transcript []llm.Message
 		for _, message := range messages {
-			if message.LlmData == nil {
+			if !message.LlmData.Valid {
 				continue
 			}
 			var parsed llm.Message
-			if err := json.Unmarshal([]byte(*message.LlmData), &parsed); err == nil {
+			if err := json.Unmarshal([]byte(message.LlmData.String), &parsed); err == nil {
 				transcript = append(transcript, parsed)
 			}
 		}

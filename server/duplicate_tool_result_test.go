@@ -68,11 +68,11 @@ func TestCancelAfterToolCompletesCreatesDuplicateToolResult(t *testing.T) {
 
 		// Look for a tool_result message
 		for _, msg := range messages {
-			if msg.Type != string(db.MessageTypeUser) || msg.LlmData == nil {
+			if msg.Type != string(db.MessageTypeUser) || !msg.LlmData.Valid {
 				continue
 			}
 			var llmMsg llm.Message
-			if err := json.Unmarshal([]byte(*msg.LlmData), &llmMsg); err != nil {
+			if err := json.Unmarshal([]byte(msg.LlmData.String), &llmMsg); err != nil {
 				continue
 			}
 			for _, content := range llmMsg.Content {
@@ -129,11 +129,11 @@ func TestCancelAfterToolCompletesCreatesDuplicateToolResult(t *testing.T) {
 	// Count tool_results by tool_use_id
 	toolResultsByID := make(map[string]int)
 	for _, msg := range messages {
-		if msg.LlmData == nil {
+		if !msg.LlmData.Valid {
 			continue
 		}
 		var llmMsg llm.Message
-		if err := json.Unmarshal([]byte(*msg.LlmData), &llmMsg); err != nil {
+		if err := json.Unmarshal([]byte(msg.LlmData.String), &llmMsg); err != nil {
 			continue
 		}
 		for _, content := range llmMsg.Content {

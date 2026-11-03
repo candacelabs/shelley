@@ -32,8 +32,8 @@ func GenerateSlug(ctx context.Context, llmProvider LLMServiceProvider, database 
 	// Don't regenerate if the conversation already has a slug. This matters
 	// for flows that look like "first message" but are actually continuations,
 	// e.g. starting a new generation after compaction.
-	if conv, err := database.GetConversationByID(ctx, conversationID); err == nil && conv != nil && conv.Slug != nil && *conv.Slug != "" {
-		return *conv.Slug, nil, nil
+	if conv, err := database.GetConversationByID(ctx, conversationID); err == nil && conv != nil && conv.Slug.Valid && conv.Slug.String != "" {
+		return conv.Slug.String, nil, nil
 	}
 
 	// Tag the ctx so the slug LLM call's usage is collected; it is recorded on
@@ -72,7 +72,7 @@ func GenerateSlug(ctx context.Context, llmProvider LLMServiceProvider, database 
 			if updated {
 				logger.Info("Generated slug for conversation", "conversationID", conversationID, "slug", slug)
 			}
-			return *conversation.Slug, marker, nil
+			return conversation.Slug.String, marker, nil
 		}
 
 		// Check if this is a unique constraint violation

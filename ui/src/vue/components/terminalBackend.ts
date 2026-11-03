@@ -275,7 +275,7 @@ let ghosttyModule: Promise<GhosttyModule> | null = null;
 async function loadGhostty() {
   // eslint-disable-next-line @typescript-eslint/ban-ts-comment
   // @ts-ignore - runtime URL, built by scripts/build.js
-  ghosttyModule ??= (import("/ghostty-web.js") as Promise<GhosttyModule>).catch((err) => {
+  ghosttyModule ??= (import("./ghostty-web.js") as Promise<GhosttyModule>).catch((err) => {
     ghosttyModule = null; // let the next terminal try again
     throw err;
   });

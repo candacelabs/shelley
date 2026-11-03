@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/guregu/null/v5"
 	"path/filepath"
 	"strings"
 
@@ -16,7 +17,7 @@ const CommitTourKind = "commit-tour"
 var ErrCommitTourWorkerInvalid = errors.New("invalid commit tour worker")
 
 func ManagedCommitTourRequest(conversation generated.Conversation) (*CommitTourRequest, bool) {
-	if conversation.ParentConversationID == nil || conversation.UserInitiated {
+	if !conversation.ParentConversationID.Valid || conversation.UserInitiated {
 		return nil, false
 	}
 	opts := ParseConversationOptions(conversation.ConversationOptions)
@@ -69,9 +70,9 @@ func (db *DB) CreateCommitTourWorker(ctx context.Context, parentID, worktree, mo
 		q := generated.New(tx.Conn())
 		conversation, err = q.CreateSubagentConversation(ctx, generated.CreateSubagentConversationParams{
 			ConversationID:       conversationID,
-			Slug:                 &slug,
-			Cwd:                  &worktree,
-			ParentConversationID: &parentID,
+			Slug:                 null.StringFrom(slug),
+			Cwd:                  null.StringFrom(worktree),
+			ParentConversationID: null.StringFrom(parentID),
 		})
 		if err != nil {
 			return err
@@ -85,11 +86,11 @@ func (db *DB) CreateCommitTourWorker(ctx context.Context, parentID, worktree, mo
 		if model != "" {
 			if err := q.UpdateConversationModel(ctx, generated.UpdateConversationModelParams{
 				ConversationID: conversationID,
-				Model:          &model,
+				Model:          null.StringFrom(model),
 			}); err != nil {
 				return err
 			}
-			conversation.Model = &model
+			conversation.Model = null.StringFrom(model)
 		}
 		conversation.ConversationOptions = string(optsJSON)
 		return nil

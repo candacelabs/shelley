@@ -72,11 +72,11 @@ func TestResponsesNativeCitationsPersistAndReplay(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if len(stored) != 1 || stored[0].LlmData == nil {
+				if len(stored) != 1 || !stored[0].LlmData.Valid {
 					t.Fatalf("stored messages = %+v", stored)
 				}
 				var reloaded llm.Message
-				if err := json.Unmarshal([]byte(*stored[0].LlmData), &reloaded); err != nil {
+				if err := json.Unmarshal([]byte(stored[0].LlmData.String), &reloaded); err != nil {
 					t.Fatal(err)
 				}
 				before, err := json.Marshal(reloaded)

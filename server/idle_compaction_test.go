@@ -48,11 +48,11 @@ func newIdlePolicyHarness(t *testing.T, opts db.ConversationOptions) (*TestHarne
 	}
 	var completed int
 	for _, row := range listMessages(t, h.db, h.convID) {
-		if row.Type != string(db.MessageTypeAgent) || row.LlmData == nil {
+		if row.Type != string(db.MessageTypeAgent) || !row.LlmData.Valid {
 			continue
 		}
 		var msg llm.Message
-		if err := json.Unmarshal([]byte(*row.LlmData), &msg); err != nil {
+		if err := json.Unmarshal([]byte(row.LlmData.String), &msg); err != nil {
 			t.Fatal(err)
 		}
 		if msg.EndOfTurn {
@@ -406,11 +406,11 @@ func cacheWarmUsage(t *testing.T, h *TestHarness) []llm.PurposedUsage {
 	t.Helper()
 	var warms []llm.PurposedUsage
 	for _, row := range listMessages(t, h.db, h.convID) {
-		if row.OtherUsageData == nil {
+		if !row.OtherUsageData.Valid {
 			continue
 		}
 		var usage []llm.PurposedUsage
-		if err := json.Unmarshal([]byte(*row.OtherUsageData), &usage); err != nil {
+		if err := json.Unmarshal([]byte(row.OtherUsageData.String), &usage); err != nil {
 			t.Fatal(err)
 		}
 		for _, u := range usage {

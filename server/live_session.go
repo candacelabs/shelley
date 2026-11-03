@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/guregu/null/v5"
 	"io"
 	"net/http"
 	"os"
@@ -150,10 +151,10 @@ func (s *Server) handleLiveSession(w http.ResponseWriter, r *http.Request, conve
 		return
 	}
 	if conversation.IsDraft {
-		conversation.Model = &offer.Model
-		conversation.Cwd = &offer.Cwd
+		conversation.Model = null.StringFrom(offer.Model)
+		conversation.Cwd = null.StringFrom(offer.Cwd)
 		if offer.Model == "" {
-			conversation.Model = &profile.Model
+			conversation.Model = null.StringFrom(profile.Model)
 		}
 	}
 	payload, err := json.Marshal(map[string]any{

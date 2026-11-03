@@ -1,6 +1,6 @@
 -- name: CreateConversation :one
 INSERT INTO conversations (conversation_id, slug, user_initiated, cwd, model, conversation_options)
-VALUES (?, ?, ?, ?, ?, ?)
+VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING *;
 
 -- name: CreateDraftConversation :one
@@ -8,7 +8,7 @@ RETURNING *;
 -- Drafts have no messages; the chat handler clears is_draft / draft when
 -- the user sends their first message via PromoteDraftConversation.
 INSERT INTO conversations (conversation_id, slug, user_initiated, cwd, model, conversation_options, is_draft, draft)
-VALUES (?, ?, TRUE, ?, ?, ?, TRUE, ?)
+VALUES ($1, $2, TRUE, $3, $4, $5, TRUE, $6)
 RETURNING *;
 
 -- name: UpdateConversationDraft :one
@@ -31,16 +31,16 @@ RETURNING *;
 -- Clears the draft state when the user sends the first message.
 UPDATE conversations
 SET is_draft = FALSE, draft = '', updated_at = CURRENT_TIMESTAMP
-WHERE conversation_id = ? AND is_draft = TRUE
+WHERE conversation_id = $1 AND is_draft = TRUE
 RETURNING *;
 
 -- name: GetConversation :one
 SELECT * FROM conversations
-WHERE conversation_id = ?;
+WHERE conversation_id = $1;
 
 -- name: GetConversationBySlug :one
 SELECT * FROM conversations
-WHERE slug = ?;
+WHERE slug = $1;
 
 -- name: ListConversations :many
 SELECT sqlc.embed(c),
@@ -54,19 +54,19 @@ SELECT sqlc.embed(c),
   -- driver + JSON + gzip for a one-line UI field. db.splitPreviewPacked splits
   -- it back apart.
   CAST(COALESCE((
-    SELECT strftime('%Y-%m-%dT%H:%M:%SZ', m.created_at) || substr((
+    SELECT to_char(m.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') || substr((
              SELECT je.value ->> 'Text'
-               FROM json_each(m.llm_data, '$.Content') je
-              WHERE je.value ->> 'Type' = 2 AND je.value ->> 'Text' <> ''
+               FROM jsonb_array_elements(m.llm_data::jsonb -> 'Content') WITH ORDINALITY AS je(value, key)
+              WHERE (je.value ->> 'Type') = '2' AND je.value ->> 'Text' <> ''
               ORDER BY je.key DESC LIMIT 1), 1, 300)
       FROM messages m
      WHERE m.conversation_id = c.conversation_id AND m.type = 'agent'
-       AND EXISTS (SELECT 1 FROM json_each(m.llm_data, '$.Content') je
-                   WHERE je.value ->> 'Type' = 2 AND je.value ->> 'Text' <> '')
+       AND EXISTS (SELECT 1 FROM jsonb_array_elements(m.llm_data::jsonb -> 'Content') WITH ORDINALITY AS je(value, key)
+                   WHERE (je.value ->> 'Type') = '2' AND je.value ->> 'Text' <> '')
      ORDER BY m.sequence_id DESC LIMIT 1), '') AS TEXT) AS preview_packed,
   CAST(COALESCE((
     SELECT MAX(m.sequence_id) FROM messages m
-     WHERE m.conversation_id = c.conversation_id), 0) AS INTEGER) AS max_sequence_id,
+     WHERE m.conversation_id = c.conversation_id), 0) AS BIGINT) AS max_sequence_id,
   -- participants_json: the distinct exe.dev accounts that authored messages in
   -- this conversation (messages.user_email, stamped from the X-ExeDev-Email
   -- header), as a JSON array. The order is SQLite's business, so
@@ -75,7 +75,7 @@ SELECT sqlc.embed(c),
   -- Rides idx_messages_participants (a partial covering index over authored
   -- messages), so this costs one index seek per listed conversation.
   CAST(COALESCE((
-    SELECT json_group_array(json_object(
+    SELECT json_agg(json_build_object(
              'email', participant.user_email,
              'message_count', participant.message_count))
       FROM (
@@ -88,13 +88,13 @@ SELECT sqlc.embed(c),
   -- Subagents ride idx_conversations_parent_id; running jobs ride
   -- idx_background_jobs_running.
   CAST((SELECT COUNT(*) FROM conversations sub
-         WHERE sub.parent_conversation_id = c.conversation_id) AS INTEGER) AS subagent_count,
+         WHERE sub.parent_conversation_id = c.conversation_id) AS BIGINT) AS subagent_count,
   CAST((SELECT COUNT(*) FROM background_jobs bj
-         WHERE bj.conversation_id = c.conversation_id AND NOT bj.exited) AS INTEGER) AS running_background_jobs
+         WHERE bj.conversation_id = c.conversation_id AND NOT bj.exited) AS BIGINT) AS running_background_jobs
 FROM conversations c
 WHERE c.archived = FALSE AND c.parent_conversation_id IS NULL
 ORDER BY c.updated_at DESC
-LIMIT ? OFFSET ?;
+LIMIT sqlc.arg('limit')::bigint OFFSET sqlc.arg('offset')::bigint;
 
 -- name: ListAllConversations :many
 -- Like ListConversations but includes subagents. Used by the conversation
@@ -111,22 +111,22 @@ SELECT sqlc.embed(c),
   -- driver + JSON + gzip for a one-line UI field. db.splitPreviewPacked splits
   -- it back apart.
   CAST(COALESCE((
-    SELECT strftime('%Y-%m-%dT%H:%M:%SZ', m.created_at) || substr((
+    SELECT to_char(m.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') || substr((
              SELECT je.value ->> 'Text'
-               FROM json_each(m.llm_data, '$.Content') je
-              WHERE je.value ->> 'Type' = 2 AND je.value ->> 'Text' <> ''
+               FROM jsonb_array_elements(m.llm_data::jsonb -> 'Content') WITH ORDINALITY AS je(value, key)
+              WHERE (je.value ->> 'Type') = '2' AND je.value ->> 'Text' <> ''
               ORDER BY je.key DESC LIMIT 1), 1, 300)
       FROM messages m
      WHERE m.conversation_id = c.conversation_id AND m.type = 'agent'
-       AND EXISTS (SELECT 1 FROM json_each(m.llm_data, '$.Content') je
-                   WHERE je.value ->> 'Type' = 2 AND je.value ->> 'Text' <> '')
+       AND EXISTS (SELECT 1 FROM jsonb_array_elements(m.llm_data::jsonb -> 'Content') WITH ORDINALITY AS je(value, key)
+                   WHERE (je.value ->> 'Type') = '2' AND je.value ->> 'Text' <> '')
      ORDER BY m.sequence_id DESC LIMIT 1), '') AS TEXT) AS preview_packed,
   CAST(COALESCE((
     SELECT MAX(m.sequence_id) FROM messages m
-     WHERE m.conversation_id = c.conversation_id), 0) AS INTEGER) AS max_sequence_id,
+     WHERE m.conversation_id = c.conversation_id), 0) AS BIGINT) AS max_sequence_id,
   -- See participants_json note on ListConversations.
   CAST(COALESCE((
-    SELECT json_group_array(json_object(
+    SELECT json_agg(json_build_object(
              'email', participant.user_email,
              'message_count', participant.message_count))
       FROM (
@@ -139,19 +139,19 @@ SELECT sqlc.embed(c),
   -- Subagents ride idx_conversations_parent_id; running jobs ride
   -- idx_background_jobs_running.
   CAST((SELECT COUNT(*) FROM conversations sub
-         WHERE sub.parent_conversation_id = c.conversation_id) AS INTEGER) AS subagent_count,
+         WHERE sub.parent_conversation_id = c.conversation_id) AS BIGINT) AS subagent_count,
   CAST((SELECT COUNT(*) FROM background_jobs bj
-         WHERE bj.conversation_id = c.conversation_id AND NOT bj.exited) AS INTEGER) AS running_background_jobs
+         WHERE bj.conversation_id = c.conversation_id AND NOT bj.exited) AS BIGINT) AS running_background_jobs
 FROM conversations c
 WHERE c.archived = FALSE
 ORDER BY c.updated_at DESC
-LIMIT ? OFFSET ?;
+LIMIT sqlc.arg('limit')::bigint OFFSET sqlc.arg('offset')::bigint;
 
 -- name: ListArchivedConversations :many
 SELECT * FROM conversations
 WHERE archived = TRUE
 ORDER BY updated_at DESC
-LIMIT ? OFFSET ?;
+LIMIT sqlc.arg('limit')::bigint OFFSET sqlc.arg('offset')::bigint;
 
 -- name: SearchConversations :many
 SELECT sqlc.embed(c),
@@ -165,22 +165,22 @@ SELECT sqlc.embed(c),
   -- driver + JSON + gzip for a one-line UI field. db.splitPreviewPacked splits
   -- it back apart.
   CAST(COALESCE((
-    SELECT strftime('%Y-%m-%dT%H:%M:%SZ', m.created_at) || substr((
+    SELECT to_char(m.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') || substr((
              SELECT je.value ->> 'Text'
-               FROM json_each(m.llm_data, '$.Content') je
-              WHERE je.value ->> 'Type' = 2 AND je.value ->> 'Text' <> ''
+               FROM jsonb_array_elements(m.llm_data::jsonb -> 'Content') WITH ORDINALITY AS je(value, key)
+              WHERE (je.value ->> 'Type') = '2' AND je.value ->> 'Text' <> ''
               ORDER BY je.key DESC LIMIT 1), 1, 300)
       FROM messages m
      WHERE m.conversation_id = c.conversation_id AND m.type = 'agent'
-       AND EXISTS (SELECT 1 FROM json_each(m.llm_data, '$.Content') je
-                   WHERE je.value ->> 'Type' = 2 AND je.value ->> 'Text' <> '')
+       AND EXISTS (SELECT 1 FROM jsonb_array_elements(m.llm_data::jsonb -> 'Content') WITH ORDINALITY AS je(value, key)
+                   WHERE (je.value ->> 'Type') = '2' AND je.value ->> 'Text' <> '')
      ORDER BY m.sequence_id DESC LIMIT 1), '') AS TEXT) AS preview_packed,
   CAST(COALESCE((
     SELECT MAX(m.sequence_id) FROM messages m
-     WHERE m.conversation_id = c.conversation_id), 0) AS INTEGER) AS max_sequence_id,
+     WHERE m.conversation_id = c.conversation_id), 0) AS BIGINT) AS max_sequence_id,
   -- See participants_json note on ListConversations.
   CAST(COALESCE((
-    SELECT json_group_array(json_object(
+    SELECT json_agg(json_build_object(
              'email', participant.user_email,
              'message_count', participant.message_count))
       FROM (
@@ -193,38 +193,38 @@ SELECT sqlc.embed(c),
   -- Subagents ride idx_conversations_parent_id; running jobs ride
   -- idx_background_jobs_running.
   CAST((SELECT COUNT(*) FROM conversations sub
-         WHERE sub.parent_conversation_id = c.conversation_id) AS INTEGER) AS subagent_count,
+         WHERE sub.parent_conversation_id = c.conversation_id) AS BIGINT) AS subagent_count,
   CAST((SELECT COUNT(*) FROM background_jobs bj
-         WHERE bj.conversation_id = c.conversation_id AND NOT bj.exited) AS INTEGER) AS running_background_jobs
+         WHERE bj.conversation_id = c.conversation_id AND NOT bj.exited) AS BIGINT) AS running_background_jobs
 FROM conversations c
-WHERE c.slug LIKE '%' || ? || '%' AND c.archived = FALSE AND c.parent_conversation_id IS NULL
+WHERE c.slug LIKE '%' || sqlc.arg('column_1') || '%' AND c.archived = FALSE AND c.parent_conversation_id IS NULL
 ORDER BY c.updated_at DESC
-LIMIT ? OFFSET ?;
+LIMIT sqlc.arg('limit')::bigint OFFSET sqlc.arg('offset')::bigint;
 
 -- name: SearchConversationsWithMessages :many
 -- Search conversations by slug OR message content (user messages and agent responses, not system prompts)
 -- Includes both top-level conversations and subagent conversations
 SELECT DISTINCT sqlc.embed(c),
-  CAST(CASE WHEN c.slug LIKE '%' || sqlc.arg('query') || '%' THEN 0 ELSE 1 END AS INTEGER) AS slug_rank,
+  CAST(CASE WHEN c.slug LIKE '%' || sqlc.arg('query') || '%' THEN 0 ELSE 1 END AS BIGINT) AS slug_rank,
   -- See preview_packed note on ListConversations. Inner messages alias is
   -- pm here to avoid colliding with the outer LEFT JOIN messages m.
   CAST(COALESCE((
-    SELECT strftime('%Y-%m-%dT%H:%M:%SZ', pm.created_at) || substr((
+    SELECT to_char(pm.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') || substr((
              SELECT je.value ->> 'Text'
-               FROM json_each(pm.llm_data, '$.Content') je
-              WHERE je.value ->> 'Type' = 2 AND je.value ->> 'Text' <> ''
+               FROM jsonb_array_elements(pm.llm_data::jsonb -> 'Content') WITH ORDINALITY AS je(value, key)
+              WHERE (je.value ->> 'Type') = '2' AND je.value ->> 'Text' <> ''
               ORDER BY je.key DESC LIMIT 1), 1, 300)
       FROM messages pm
      WHERE pm.conversation_id = c.conversation_id AND pm.type = 'agent'
-       AND EXISTS (SELECT 1 FROM json_each(pm.llm_data, '$.Content') je
-                   WHERE je.value ->> 'Type' = 2 AND je.value ->> 'Text' <> '')
+       AND EXISTS (SELECT 1 FROM jsonb_array_elements(pm.llm_data::jsonb -> 'Content') WITH ORDINALITY AS je(value, key)
+                   WHERE (je.value ->> 'Type') = '2' AND je.value ->> 'Text' <> '')
      ORDER BY pm.sequence_id DESC LIMIT 1), '') AS TEXT) AS preview_packed,
   CAST(COALESCE((
     SELECT MAX(pm.sequence_id) FROM messages pm
-     WHERE pm.conversation_id = c.conversation_id), 0) AS INTEGER) AS max_sequence_id,
+     WHERE pm.conversation_id = c.conversation_id), 0) AS BIGINT) AS max_sequence_id,
   -- See participants_json note on ListConversations.
   CAST(COALESCE((
-    SELECT json_group_array(json_object(
+    SELECT json_agg(json_build_object(
              'email', participant.user_email,
              'message_count', participant.message_count))
       FROM (
@@ -237,19 +237,19 @@ SELECT DISTINCT sqlc.embed(c),
   -- Subagents ride idx_conversations_parent_id; running jobs ride
   -- idx_background_jobs_running.
   CAST((SELECT COUNT(*) FROM conversations sub
-         WHERE sub.parent_conversation_id = c.conversation_id) AS INTEGER) AS subagent_count,
+         WHERE sub.parent_conversation_id = c.conversation_id) AS BIGINT) AS subagent_count,
   CAST((SELECT COUNT(*) FROM background_jobs bj
-         WHERE bj.conversation_id = c.conversation_id AND NOT bj.exited) AS INTEGER) AS running_background_jobs
+         WHERE bj.conversation_id = c.conversation_id AND NOT bj.exited) AS BIGINT) AS running_background_jobs
 FROM conversations c
 LEFT JOIN messages m ON c.conversation_id = m.conversation_id AND m.type IN ('user', 'agent')
 WHERE c.archived = FALSE
   AND (
     c.slug LIKE '%' || sqlc.arg('query') || '%'
-    OR json_extract(m.user_data, '$.text') LIKE '%' || sqlc.arg('query') || '%'
+    OR (m.user_data::jsonb ->> 'text') LIKE '%' || sqlc.arg('query') || '%'
     OR m.llm_data LIKE '%' || sqlc.arg('query') || '%'
   )
 ORDER BY slug_rank, c.updated_at DESC
-LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
+LIMIT sqlc.arg('limit')::bigint OFFSET sqlc.arg('offset')::bigint;
 
 -- name: SearchConversationsFTSList :many
 -- Top-level conversations matching either a slug substring or an FTS5 MATCH
@@ -257,19 +257,20 @@ LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
 -- both the LIKE pattern (with %, _, \ pre-escaped) and the MATCH
 -- expression from user input.
 WITH fts_hits AS (
-  SELECT DISTINCT m.conversation_id
+  SELECT m.conversation_id
   FROM messages_fts
-  CROSS JOIN messages m ON m.rowid = messages_fts.rowid
-  CROSS JOIN conversations eligible ON eligible.conversation_id = m.conversation_id
-  WHERE messages_fts MATCH @fts_match
+  JOIN messages m ON m.message_id = messages_fts.message_id
+  JOIN conversations eligible ON eligible.conversation_id = m.conversation_id
+  WHERE messages_fts.document @@ websearch_to_tsquery('english', sqlc.narg('fts_match')::text)
     AND eligible.parent_conversation_id IS NULL
     AND eligible.archived = sqlc.arg('archived')
-    AND json_extract(eligible.conversation_options, '$.kind') IS NOT 'search'
-  ORDER BY eligible.updated_at DESC
-  LIMIT sqlc.arg('limit') + sqlc.arg('offset')
+    AND (eligible.conversation_options::jsonb ->> 'kind') IS DISTINCT FROM 'search'
+  GROUP BY m.conversation_id
+  ORDER BY max(eligible.updated_at) DESC
+  LIMIT sqlc.arg('limit')::bigint + sqlc.arg('offset')::bigint
 )
 SELECT sqlc.embed(c),
-  CAST(CASE WHEN c.slug LIKE sqlc.arg('slug_like') ESCAPE '\' THEN 0 ELSE 1 END AS INTEGER) AS slug_rank,
+  CAST(CASE WHEN c.slug LIKE sqlc.narg('slug_like')::text ESCAPE '\' THEN 0 ELSE 1 END AS BIGINT) AS slug_rank,
   -- preview_packed: locate the newest agent message that actually contains a
   -- text block (the EXISTS short-circuits on the first one), then pull that
   -- block. The outer ORDER BY rides idx_messages_conv_type_seq, so we stop at
@@ -280,22 +281,22 @@ SELECT sqlc.embed(c),
   -- driver + JSON + gzip for a one-line UI field. db.splitPreviewPacked splits
   -- it back apart.
   CAST(COALESCE((
-    SELECT strftime('%Y-%m-%dT%H:%M:%SZ', m.created_at) || substr((
+    SELECT to_char(m.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') || substr((
              SELECT je.value ->> 'Text'
-               FROM json_each(m.llm_data, '$.Content') je
-              WHERE je.value ->> 'Type' = 2 AND je.value ->> 'Text' <> ''
+               FROM jsonb_array_elements(m.llm_data::jsonb -> 'Content') WITH ORDINALITY AS je(value, key)
+              WHERE (je.value ->> 'Type') = '2' AND je.value ->> 'Text' <> ''
               ORDER BY je.key DESC LIMIT 1), 1, 300)
       FROM messages m
      WHERE m.conversation_id = c.conversation_id AND m.type = 'agent'
-       AND EXISTS (SELECT 1 FROM json_each(m.llm_data, '$.Content') je
-                   WHERE je.value ->> 'Type' = 2 AND je.value ->> 'Text' <> '')
+       AND EXISTS (SELECT 1 FROM jsonb_array_elements(m.llm_data::jsonb -> 'Content') WITH ORDINALITY AS je(value, key)
+                   WHERE (je.value ->> 'Type') = '2' AND je.value ->> 'Text' <> '')
      ORDER BY m.sequence_id DESC LIMIT 1), '') AS TEXT) AS preview_packed,
   CAST(COALESCE((
     SELECT MAX(m.sequence_id) FROM messages m
-     WHERE m.conversation_id = c.conversation_id), 0) AS INTEGER) AS max_sequence_id,
+     WHERE m.conversation_id = c.conversation_id), 0) AS BIGINT) AS max_sequence_id,
   -- See participants_json note on ListConversations.
   CAST(COALESCE((
-    SELECT json_group_array(json_object(
+    SELECT json_agg(json_build_object(
              'email', participant.user_email,
              'message_count', participant.message_count))
       FROM (
@@ -308,43 +309,43 @@ SELECT sqlc.embed(c),
   -- Subagents ride idx_conversations_parent_id; running jobs ride
   -- idx_background_jobs_running.
   CAST((SELECT COUNT(*) FROM conversations sub
-         WHERE sub.parent_conversation_id = c.conversation_id) AS INTEGER) AS subagent_count,
+         WHERE sub.parent_conversation_id = c.conversation_id) AS BIGINT) AS subagent_count,
   CAST((SELECT COUNT(*) FROM background_jobs bj
-         WHERE bj.conversation_id = c.conversation_id AND NOT bj.exited) AS INTEGER) AS running_background_jobs
+         WHERE bj.conversation_id = c.conversation_id AND NOT bj.exited) AS BIGINT) AS running_background_jobs
 FROM conversations c
 WHERE c.parent_conversation_id IS NULL
   AND c.archived = sqlc.arg('archived')
-  AND json_extract(c.conversation_options, '$.kind') IS NOT 'search'
+  AND (c.conversation_options::jsonb ->> 'kind') IS DISTINCT FROM 'search'
   AND (
-    c.slug LIKE @slug_like ESCAPE '\'
+    c.slug LIKE sqlc.narg('slug_like')::text ESCAPE '\'
     OR c.conversation_id IN (SELECT conversation_id FROM fts_hits)
   )
 ORDER BY slug_rank, c.archived ASC, c.updated_at DESC
-LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
+LIMIT sqlc.arg('limit')::bigint OFFSET sqlc.arg('offset')::bigint;
 
 -- name: SearchArchivedConversations :many
 SELECT * FROM conversations
-WHERE slug LIKE '%' || ? || '%' AND archived = TRUE
+WHERE slug LIKE '%' || sqlc.arg('column_1') || '%' AND archived = TRUE
 ORDER BY updated_at DESC
-LIMIT ? OFFSET ?;
+LIMIT sqlc.arg('limit')::bigint OFFSET sqlc.arg('offset')::bigint;
 
 -- name: UpdateConversationSlug :one
 UPDATE conversations
-SET slug = ?, updated_at = CURRENT_TIMESTAMP
-WHERE conversation_id = ?
+SET slug = $1, updated_at = CURRENT_TIMESTAMP
+WHERE conversation_id = $2
 RETURNING *;
 
 -- name: UpdateConversationTimestamp :exec
 UPDATE conversations
 SET updated_at = CURRENT_TIMESTAMP
-WHERE conversation_id = ?;
+WHERE conversation_id = $1;
 
 -- name: IncrementConversationGeneration :one
 UPDATE conversations
 SET current_generation = current_generation + 1,
     turn_interrupted = FALSE,
     updated_at = CURRENT_TIMESTAMP
-WHERE conversation_id = ?
+WHERE conversation_id = $1
 RETURNING *;
 
 -- name: SetConversationGeneration :one
@@ -360,7 +361,7 @@ RETURNING *;
 
 -- name: DeleteConversation :exec
 DELETE FROM conversations
-WHERE conversation_id = ?;
+WHERE conversation_id = $1;
 
 -- name: CountConversations :one
 SELECT COUNT(*) FROM conversations WHERE archived = FALSE AND parent_conversation_id IS NULL;
@@ -368,30 +369,30 @@ SELECT COUNT(*) FROM conversations WHERE archived = FALSE AND parent_conversatio
 -- name: ArchiveConversation :one
 UPDATE conversations
 SET archived = TRUE
-WHERE conversation_id = ?
+WHERE conversation_id = $1
 RETURNING *;
 
 -- name: UnarchiveConversation :one
 UPDATE conversations
 SET archived = FALSE
-WHERE conversation_id = ?
+WHERE conversation_id = $1
 RETURNING *;
 
 -- name: UpdateConversationCwd :one
 UPDATE conversations
-SET cwd = ?, updated_at = CURRENT_TIMESTAMP
-WHERE conversation_id = ?
+SET cwd = $1, updated_at = CURRENT_TIMESTAMP
+WHERE conversation_id = $2
 RETURNING *;
 
 
 -- name: CreateSubagentConversation :one
 INSERT INTO conversations (conversation_id, slug, user_initiated, cwd, parent_conversation_id)
-VALUES (?, ?, FALSE, ?, ?)
+VALUES ($1, $2, FALSE, $3, $4)
 RETURNING *;
 
 -- name: GetSubagents :many
 SELECT * FROM conversations
-WHERE parent_conversation_id = ?
+WHERE parent_conversation_id = $1
 ORDER BY created_at ASC;
 
 -- name: GetSubagentUsage :many
@@ -401,7 +402,7 @@ ORDER BY created_at ASC;
 -- (not aggregated) so handleSubagentUsage can price each call by the
 -- context-size tier its prompt lands in before summing.
 WITH RECURSIVE descendants(conversation_id) AS (
-  SELECT p.conversation_id FROM conversations p WHERE p.parent_conversation_id = ?
+  SELECT p.conversation_id FROM conversations p WHERE p.parent_conversation_id = $1
   UNION ALL
   SELECT c.conversation_id FROM conversations c
   JOIN descendants d ON c.parent_conversation_id = d.conversation_id
@@ -409,16 +410,16 @@ WITH RECURSIVE descendants(conversation_id) AS (
 SELECT
   m.model_name,
   m.llm_api_url,
-  CAST(COALESCE(m.usage_data ->> 'input_tokens', 0) AS INTEGER) AS input_tokens,
-  CAST(COALESCE(m.usage_data ->> 'cache_creation_input_tokens', 0) AS INTEGER) AS cache_creation_input_tokens,
-  CAST(COALESCE(m.usage_data ->> 'cache_read_input_tokens', 0) AS INTEGER) AS cache_read_input_tokens,
-  CAST(COALESCE(m.usage_data ->> 'output_tokens', 0) AS INTEGER) AS output_tokens,
-  CAST(COALESCE(m.usage_data ->> 'cost_usd', 0) AS REAL) AS cost_usd
+  CAST(COALESCE(m.usage_data ->> 'input_tokens', 0) AS BIGINT) AS input_tokens,
+  CAST(COALESCE(m.usage_data ->> 'cache_creation_input_tokens', 0) AS BIGINT) AS cache_creation_input_tokens,
+  CAST(COALESCE(m.usage_data ->> 'cache_read_input_tokens', 0) AS BIGINT) AS cache_read_input_tokens,
+  CAST(COALESCE(m.usage_data ->> 'output_tokens', 0) AS BIGINT) AS output_tokens,
+  CAST(COALESCE(m.usage_data ->> 'cost_usd', 0) AS DOUBLE PRECISION) AS cost_usd
 -- CROSS JOIN keeps the small descendants set outermost. A regular JOIN lets
 -- SQLite start from every agent message, which makes this query scan the full
 -- messages table even when the conversation has no subagents.
 FROM descendants d
-CROSS JOIN messages m INDEXED BY idx_messages_conv_type_seq
+CROSS JOIN messages m
 WHERE m.conversation_id = d.conversation_id
   AND m.type = 'agent' AND m.usage_data IS NOT NULL
   -- Synthetic end-of-turn markers have usage_data but no tokens or cost.
@@ -435,7 +436,7 @@ WHERE m.conversation_id = d.conversation_id
 -- indirect usage rides on its own messages instead. Returned one row per
 -- entry (not aggregated) so each can be priced by its context-size tier.
 WITH RECURSIVE descendants(conversation_id) AS (
-  SELECT p.conversation_id FROM conversations p WHERE p.parent_conversation_id = ?
+  SELECT p.conversation_id FROM conversations p WHERE p.parent_conversation_id = $1
   UNION ALL
   SELECT c.conversation_id FROM conversations c
   JOIN descendants d ON c.parent_conversation_id = d.conversation_id
@@ -443,57 +444,57 @@ WITH RECURSIVE descendants(conversation_id) AS (
 SELECT
   CAST(COALESCE(je.value ->> 'model', '') AS TEXT) AS model_name,
   CAST(COALESCE(je.value ->> 'url', '') AS TEXT) AS llm_api_url,
-  CAST(COALESCE(je.value ->> 'input_tokens', 0) AS INTEGER) AS input_tokens,
-  CAST(COALESCE(je.value ->> 'cache_creation_input_tokens', 0) AS INTEGER) AS cache_creation_input_tokens,
-  CAST(COALESCE(je.value ->> 'cache_read_input_tokens', 0) AS INTEGER) AS cache_read_input_tokens,
-  CAST(COALESCE(je.value ->> 'output_tokens', 0) AS INTEGER) AS output_tokens,
-  CAST(COALESCE(je.value ->> 'cost_usd', 0) AS REAL) AS cost_usd
+  CAST(COALESCE(je.value ->> 'input_tokens', 0) AS BIGINT) AS input_tokens,
+  CAST(COALESCE(je.value ->> 'cache_creation_input_tokens', 0) AS BIGINT) AS cache_creation_input_tokens,
+  CAST(COALESCE(je.value ->> 'cache_read_input_tokens', 0) AS BIGINT) AS cache_read_input_tokens,
+  CAST(COALESCE(je.value ->> 'output_tokens', 0) AS BIGINT) AS output_tokens,
+  CAST(COALESCE(je.value ->> 'cost_usd', 0) AS DOUBLE PRECISION) AS cost_usd
 -- Keep descendants outermost here too, before expanding each matching
 -- message's JSON. See GetSubagentUsage above.
 FROM descendants d
-CROSS JOIN messages m INDEXED BY idx_messages_conversation_id
-CROSS JOIN json_each(m.other_usage_data) je
+CROSS JOIN messages m
+CROSS JOIN jsonb_each(m.other_usage_data::jsonb) je
 WHERE m.conversation_id = d.conversation_id
   AND m.other_usage_data IS NOT NULL;
 
 -- name: GetConversationBySlugAndParent :one
 SELECT * FROM conversations
-WHERE slug = ? AND parent_conversation_id = ?;
+WHERE slug = $1 AND parent_conversation_id = $2;
 
 -- name: UpdateConversationModel :exec
 UPDATE conversations
-SET model = ?
-WHERE conversation_id = ? AND model IS NULL;
+SET model = $1
+WHERE conversation_id = $2 AND model IS NULL;
 
 -- name: ForceUpdateConversationModel :exec
 UPDATE conversations
-SET model = ?, updated_at = CURRENT_TIMESTAMP
-WHERE conversation_id = ?;
+SET model = $1, updated_at = CURRENT_TIMESTAMP
+WHERE conversation_id = $2;
 
 -- name: GetConversationOptions :one
 SELECT conversation_options FROM conversations
-WHERE conversation_id = ?;
+WHERE conversation_id = $1;
 
 -- name: UpdateConversationOptions :exec
 UPDATE conversations
-SET conversation_options = ?
-WHERE conversation_id = ?;
+SET conversation_options = $1
+WHERE conversation_id = $2;
 
 -- name: GetConversationQueuedMessages :one
 SELECT queued_messages FROM conversations
-WHERE conversation_id = ?;
+WHERE conversation_id = $1;
 
 -- name: UpdateConversationQueuedMessages :exec
 -- Replaces the queued-messages JSON array and bumps updated_at so the
 -- conversation re-sorts and a list-patch diff is emitted for the change.
 UPDATE conversations
-SET queued_messages = ?, updated_at = CURRENT_TIMESTAMP
-WHERE conversation_id = ?;
+SET queued_messages = $1, updated_at = CURRENT_TIMESTAMP
+WHERE conversation_id = $2;
 
 -- name: UpdateConversationParent :one
 UPDATE conversations
-SET parent_conversation_id = ?, updated_at = CURRENT_TIMESTAMP
-WHERE conversation_id = ?
+SET parent_conversation_id = $1, updated_at = CURRENT_TIMESTAMP
+WHERE conversation_id = $2
 RETURNING *;
 
 -- name: SetConversationAgentWorking :exec
@@ -583,34 +584,34 @@ WHERE agent_working = TRUE
 ORDER BY updated_at DESC;
 
 -- name: SearchConversationsFTSSnippets :many
--- Best-ranked snippet per conversation for the given conversation IDs.
--- snippet(table, columnIndex=-1 (any), start, end, ellipsis, tokenCount).
+-- Best-ranked snippet per conversation for the given conversation IDs: the
+-- message whose text ranks highest for the query, its matched fragment marked
+-- by mark_start and mark_end.
 WITH ranked AS (
   SELECT m.conversation_id, m.message_id,
-         CAST(m.rowid AS INTEGER) AS message_rowid,
          row_number() OVER (
            PARTITION BY m.conversation_id
-           ORDER BY hits.rank
+           ORDER BY ts_rank(hits.document, websearch_to_tsquery('english', sqlc.narg('fts_match')::text)) DESC
          ) AS rank_in_conversation
   FROM messages m
-  JOIN messages_fts hits ON hits.rowid = m.rowid
-  WHERE hits.messages_fts MATCH @fts_match
-    AND m.conversation_id IN (sqlc.slice('conv_ids'))
+  JOIN messages_fts hits ON hits.message_id = m.message_id
+  WHERE hits.document @@ websearch_to_tsquery('english', sqlc.narg('fts_match')::text)
+    AND m.conversation_id = ANY(sqlc.arg(conv_ids)::text[])
 )
 SELECT ranked.conversation_id, ranked.message_id,
-       snippet(messages_fts, 0, sqlc.arg(mark_start), sqlc.arg(mark_end), '...', 16) AS snippet
--- Keep FTS outermost so the prefix scan starts once, not once per snippet.
+       ts_headline('english', messages_fts.text, websearch_to_tsquery('english', sqlc.narg('fts_match')::text),
+         'StartSel=' || sqlc.arg(mark_start)::text || ', StopSel=' || sqlc.arg(mark_end)::text ||
+         ', MaxWords=16, MinWords=4, FragmentDelimiter=...')::text AS snippet
 FROM messages_fts
-CROSS JOIN ranked ON ranked.message_rowid = messages_fts.rowid
-WHERE ranked.rank_in_conversation = 1
-  AND messages_fts.messages_fts MATCH @fts_match;
+JOIN ranked ON ranked.message_id = messages_fts.message_id
+WHERE ranked.rank_in_conversation = 1;
 
 -- name: UpdateConversationTags :one
 -- Tagging is a metadata-only edit; deliberately does not bump updated_at
 -- so retagging old conversations doesn't reorder the list.
 UPDATE conversations
-SET tags = ?
-WHERE conversation_id = ?
+SET tags = $1
+WHERE conversation_id = $2
 RETURNING *;
 
 -- name: ListConversationsWithQueuedTranscriptions :many
@@ -626,15 +627,15 @@ SELECT * FROM conversations
 WHERE parent_conversation_id IS NOT NULL
   AND user_initiated = FALSE
   AND conversation_options LIKE '%"kind":"commit-tour"%'
-ORDER BY created_at ASC, rowid ASC;
+ORDER BY created_at ASC, conversation_id ASC;
 
 -- name: CreateChannelConversation :one
 INSERT INTO conversations (conversation_id, user_initiated, model, conversation_options, external_conversation_id, external_endpoint)
-VALUES (?, TRUE, ?, ?, ?, ?)
+VALUES ($1, TRUE, $2, $3, $4, $5)
 RETURNING *;
 
 -- name: GetConversationByExternalID :one
-SELECT * FROM conversations WHERE external_conversation_id = ?;
+SELECT * FROM conversations WHERE external_conversation_id = $1;
 
 -- name: ListChannelConversationsWithQueuedMessages :many
 -- Conversations bound to an external chat with queued messages. Used once
@@ -642,3 +643,20 @@ SELECT * FROM conversations WHERE external_conversation_id = ?;
 SELECT * FROM conversations
 WHERE external_conversation_id IS NOT NULL AND queued_messages != '[]'
 ORDER BY created_at ASC;
+
+-- name: GetSearchEnhancementModel :one
+-- The model of the newest top-level, non-search conversation this person
+-- wrote in.
+SELECT c.model::text AS model FROM conversations c
+WHERE c.parent_conversation_id IS NULL AND c.model IS NOT NULL AND c.model <> ''
+  AND coalesce(c.conversation_options::jsonb->>'kind', '') <> 'search'
+  AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.conversation_id
+              AND m.user_email = sqlc.arg(email)::text AND m.user_email <> '')
+ORDER BY c.updated_at DESC
+LIMIT 1;
+
+-- name: CountConversationsByGeneration :many
+SELECT c.current_generation, COUNT(*)::bigint AS count FROM conversations c
+WHERE EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.conversation_id)
+GROUP BY c.current_generation
+ORDER BY c.current_generation;

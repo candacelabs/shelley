@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/guregu/null/v5"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -143,7 +144,7 @@ func conversationByExternalID(t *testing.T, database *db.DB, chatID string) (gen
 	t.Helper()
 	var conv generated.Conversation
 	err := database.Queries(t.Context(), func(q *generated.Queries) (err error) {
-		conv, err = q.GetConversationByExternalID(t.Context(), &chatID)
+		conv, err = q.GetConversationByExternalID(t.Context(), null.StringFrom(chatID))
 		return err
 	})
 	return conv, err
@@ -163,19 +164,19 @@ func channelUserMessages(t *testing.T, database *db.DB, conversationID string) [
 	}
 	var out []string
 	for _, m := range messages {
-		if m.Type != string(db.MessageTypeUser) || m.LlmData == nil {
+		if m.Type != string(db.MessageTypeUser) || !m.LlmData.Valid {
 			continue
 		}
 		var msg llm.Message
-		if err := json.Unmarshal([]byte(*m.LlmData), &msg); err != nil {
+		if err := json.Unmarshal([]byte(m.LlmData.String), &msg); err != nil {
 			t.Fatal(err)
 		}
 		if len(msg.Content) == 0 || msg.Content[0].Type != llm.ContentTypeText {
 			continue
 		}
 		id := ""
-		if m.ExternalMessageID != nil {
-			id = *m.ExternalMessageID
+		if m.ExternalMessageID.Valid {
+			id = m.ExternalMessageID.String
 		}
 		out = append(out, id+": "+msg.Content[0].Text)
 	}
@@ -493,7 +494,7 @@ func TestChannelMessageDeliversToChatConversation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if conv.ExternalEndpoint == nil || *conv.ExternalEndpoint != "https://messages.int.exe.xyz" {
+	if !conv.ExternalEndpoint.Valid || conv.ExternalEndpoint.String != "https://messages.int.exe.xyz" {
 		t.Fatalf("external_endpoint = %v, want the messages integration", conv.ExternalEndpoint)
 	}
 	gate.waitStarted(t, "first")
@@ -633,10 +634,10 @@ func TestDebugChannelRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	prefix := "http://localhost:" + port + "/debug/channels/gateway/" + chat + "/"
-	if conv.ExternalEndpoint == nil || !strings.HasPrefix(*conv.ExternalEndpoint, prefix) {
+	if !conv.ExternalEndpoint.Valid || !strings.HasPrefix(conv.ExternalEndpoint.String, prefix) {
 		t.Fatalf("external_endpoint = %v, want %s<token>", conv.ExternalEndpoint, prefix)
 	}
-	endpoint := *conv.ExternalEndpoint
+	endpoint := conv.ExternalEndpoint.String
 	waitFor(t, 5*time.Second, func() bool {
 		c, err := database.GetConversationByID(t.Context(), conv.ConversationID)
 		return err == nil && !c.AgentWorking
@@ -1000,7 +1001,7 @@ func TestChannelConversationRepliesWithMessageUser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	endpoint, err := url.Parse(*conv.ExternalEndpoint)
+	endpoint, err := url.Parse(conv.ExternalEndpoint.String)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1133,8 +1134,8 @@ func TestWebChatRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if conv.ExternalEndpoint != nil {
-		t.Fatalf("external_endpoint = %q, want none", *conv.ExternalEndpoint)
+	if conv.ExternalEndpoint.Valid {
+		t.Fatalf("external_endpoint = %q, want none", conv.ExternalEndpoint.String)
 	}
 	waitFor(t, 5*time.Second, func() bool {
 		c, err := database.GetConversationByID(t.Context(), conv.ConversationID)

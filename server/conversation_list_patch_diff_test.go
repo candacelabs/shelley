@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"github.com/guregu/null/v5"
 	"testing"
 	"time"
 
@@ -16,7 +17,7 @@ func mkConv(id, slug string, working bool) ConversationWithState {
 		ConversationListItem: db.ConversationListItem{
 			Conversation: generated.Conversation{
 				ConversationID:      id,
-				Slug:                &s,
+				Slug:                null.StringFrom(s),
 				UserInitiated:       true,
 				CreatedAt:           now,
 				UpdatedAt:           now,

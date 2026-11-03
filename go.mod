@@ -12,8 +12,11 @@ require (
 	github.com/fynelabs/selfupdate v0.2.1
 	github.com/go-json-experiment/json v0.0.0-20260820222146-c27c302e5fc3
 	github.com/google/uuid v1.6.0
+	github.com/guregu/null/v5 v5.0.0
+	github.com/jackc/pgx/v5 v5.10.0
 	github.com/josharian/sockpath v0.0.0-20260904222211-971ecb607ad7
 	github.com/klauspost/compress v1.20.0
+	github.com/lib/pq v1.12.3
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/pkg/diff v0.0.0-20241224192749-4e6772a4315c
 	github.com/rivo/uniseg v0.4.7
@@ -58,7 +61,6 @@ require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
-	github.com/jackc/pgx/v5 v5.7.5 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect

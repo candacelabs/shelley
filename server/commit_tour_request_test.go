@@ -152,7 +152,7 @@ func TestCommitTourCommandStartsDetachedWorker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(parentMessages) != 1 || parentMessages[0].Type != string(db.MessageTypeGitInfo) || parentMessages[0].UserData == nil {
+	if len(parentMessages) != 1 || parentMessages[0].Type != string(db.MessageTypeGitInfo) || !parentMessages[0].UserData.Valid {
 		t.Fatalf("tour command did not record a status message: %#v", parentMessages)
 	}
 	var marker struct {
@@ -160,7 +160,7 @@ func TestCommitTourCommandStartsDetachedWorker(t *testing.T) {
 		Commit      string `json:"commit"`
 		Worktree    string `json:"worktree"`
 	}
-	if err := json.Unmarshal([]byte(*parentMessages[0].UserData), &marker); err != nil {
+	if err := json.Unmarshal([]byte(parentMessages[0].UserData.String), &marker); err != nil {
 		t.Fatal(err)
 	}
 	if !marker.TourRequest || marker.Commit != hash || marker.Worktree != repo {

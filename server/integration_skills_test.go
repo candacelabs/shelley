@@ -330,7 +330,7 @@ func systemPromptSkillNames(t *testing.T, h *TestHarness, subagent bool) []strin
 				Name string `json:"name"`
 			} `json:"skills"`
 		}
-		if err := json.Unmarshal([]byte(*msg.DisplayData), &displayData); err != nil {
+		if err := json.Unmarshal([]byte(msg.DisplayData.String), &displayData); err != nil {
 			t.Fatal(err)
 		}
 		var names []string

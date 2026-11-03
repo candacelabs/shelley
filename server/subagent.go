@@ -58,17 +58,17 @@ func (r *SubagentRunner) RunSubagent(ctx context.Context, conversationID, prompt
 			hookResult, hookErr := RunNewConversationHookIn(s.hooksDir, NewConversationHookInput{
 				Prompt: prompt,
 				Model:  modelID,
-				Cwd:    derefString(conv.Cwd),
+				Cwd:    derefString(conv.Cwd.Ptr()),
 				Readonly: NewConversationReadonly{
 					ConversationID: conversationID,
 					IsSubagent:     true,
-					ParentID:       *conv.ParentConversationID,
+					ParentID:       conv.ParentConversationID.String,
 				},
 			})
 			if hookErr != nil {
 				return "", fmt.Errorf("new-conversation hook: %w", hookErr)
 			}
-			if hookResult.Cwd != derefString(conv.Cwd) {
+			if hookResult.Cwd != derefString(conv.Cwd.Ptr()) {
 				if err := s.db.UpdateConversationCwd(ctx, conversationID, hookResult.Cwd); err != nil {
 					s.logger.Error("Failed to update subagent cwd from hook", "error", err)
 				}
@@ -123,16 +123,16 @@ func (r *SubagentRunner) RunSubagent(ctx context.Context, conversationID, prompt
 	}
 	if convErr == nil && isDelegatedSubagent(*conv) {
 		// New delegated work after Stop can report back to its parent again.
-		s.resumeParentCompletions(*conv.ParentConversationID)
+		s.resumeParentCompletions(conv.ParentConversationID.String)
 		// Mark the prompt as the parent's, so it is told apart from what the
 		// user types into the subagent: the model sees it in <parent_message>,
 		// the UI shows where it came from, and owesReport counts it.
 		parentSlug := ""
-		if parent, err := s.db.GetConversationByID(ctx, *conv.ParentConversationID); err == nil {
-			parentSlug = derefString(parent.Slug)
+		if parent, err := s.db.GetConversationByID(ctx, conv.ParentConversationID.String); err == nil {
+			parentSlug = derefString(parent.Slug.Ptr())
 		}
 		ctx = contextWithTurnUserData(ctx, senderMessageUserData{
-			SenderConversationID: *conv.ParentConversationID,
+			SenderConversationID: conv.ParentConversationID.String,
 			SenderSlug:           parentSlug,
 			SenderRelationship:   senderRelationshipParent,
 			Text:                 prompt,
@@ -160,16 +160,16 @@ func (s *Server) inheritedSubagentModel(ctx context.Context, conversationID stri
 	if err != nil {
 		return "", err
 	}
-	if conv.Model != nil && *conv.Model != "" {
-		return *conv.Model, nil
+	if conv.Model.Valid && conv.Model.String != "" {
+		return conv.Model.String, nil
 	}
-	if conv.ParentConversationID != nil {
-		parent, err := s.db.GetConversationByID(ctx, *conv.ParentConversationID)
+	if conv.ParentConversationID.Valid {
+		parent, err := s.db.GetConversationByID(ctx, conv.ParentConversationID.String)
 		if err != nil {
 			return "", err
 		}
-		if parent.Model != nil && *parent.Model != "" {
-			return *parent.Model, nil
+		if parent.Model.Valid && parent.Model.String != "" {
+			return parent.Model.String, nil
 		}
 	}
 	return s.effectiveDefaultModel(s.getModelList()), nil
@@ -200,12 +200,12 @@ func (s *Server) messageParent(ctx context.Context, conv generated.Conversation,
 		return fmt.Errorf("conversation %s is not a subagent", conv.ConversationID)
 	}
 	s.mu.Lock()
-	stopped := s.stoppedParents[*conv.ParentConversationID]
+	stopped := s.stoppedParents[conv.ParentConversationID.String]
 	s.mu.Unlock()
 	if stopped {
-		return fmt.Errorf("parent conversation %s was stopped", *conv.ParentConversationID)
+		return fmt.Errorf("parent conversation %s was stopped", conv.ParentConversationID.String)
 	}
-	parent, err := s.getOrCreateConversationManager(ctx, *conv.ParentConversationID, "")
+	parent, err := s.getOrCreateConversationManager(ctx, conv.ParentConversationID.String, "")
 	if err != nil {
 		return fmt.Errorf("load parent conversation: %w", err)
 	}
@@ -214,7 +214,7 @@ func (s *Server) messageParent(ctx context.Context, conv generated.Conversation,
 	parent.mu.Unlock()
 	ctx = contextWithTurnUserData(ctx, senderMessageUserData{
 		SenderConversationID: conv.ConversationID,
-		SenderSlug:           derefString(conv.Slug),
+		SenderSlug:           derefString(conv.Slug.Ptr()),
 		SenderRelationship:   senderRelationshipSubagent,
 		Text:                 text,
 	})
@@ -252,7 +252,7 @@ func (s *Server) reportUnreportedReply(ctx context.Context, cm *ConversationMana
 		return reply, false
 	}
 	s.mu.Lock()
-	stopped := s.stoppedParents[*conv.ParentConversationID]
+	stopped := s.stoppedParents[conv.ParentConversationID.String]
 	s.mu.Unlock()
 	if stopped {
 		return reply, false
@@ -308,10 +308,10 @@ func (s *Server) reportUnreportedReply(ctx context.Context, cm *ConversationMana
 // into the subagent directly. Prompts from before RunSubagent marked them
 // read the same way.
 func fromParent(msg generated.Message) bool {
-	if msg.UserData == nil {
+	if !msg.UserData.Valid {
 		return false
 	}
-	data, ok, _ := parseSenderMessageUserData([]byte(*msg.UserData))
+	data, ok, _ := parseSenderMessageUserData([]byte(msg.UserData.String))
 	return ok && data.SenderRelationship == senderRelationshipParent
 }
 

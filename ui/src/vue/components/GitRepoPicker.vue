@@ -290,7 +290,7 @@ watch(
     repos.value = null;
     query.value = "";
     activeIdx.value = 0;
-    fetch("/api/git/repos")
+    fetch("api/git/repos")
       .then(async (r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return (await r.json()) as GitReposResponse;

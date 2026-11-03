@@ -830,7 +830,7 @@ function conversationToItem(conv: ConversationWithState): CommandItem {
       emit("select-conversation", conv);
       emit("close");
     },
-    url: conv.slug ? `/c/${conv.slug}` : undefined,
+    url: conv.slug ? `c/${conv.slug}` : undefined,
   };
 }
 

@@ -51,7 +51,7 @@ func TestCreateBtwReaderConversationIsAtomicAndStoresPointer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if child.ParentConversationID == nil || *child.ParentConversationID != parent.ConversationID {
+	if !child.ParentConversationID.Valid || child.ParentConversationID.String != parent.ConversationID {
 		t.Fatalf("child parent = %v", child.ParentConversationID)
 	}
 	childOptions := ParseConversationOptions(child.ConversationOptions)
@@ -72,8 +72,8 @@ func TestCreateBtwReaderConversationIsAtomicAndStoresPointer(t *testing.T) {
 		t.Fatalf("atomic child initialization = %#v, working=%t", childMessages, child.AgentWorking)
 	}
 	for _, message := range childMessages {
-		if message.LlmData != nil && (strings.Contains(*message.LlmData, "frozen") ||
-			strings.Contains(*message.LlmData, "historical answer")) {
+		if message.LlmData.Valid && (strings.Contains(message.LlmData.String, "frozen") ||
+			strings.Contains(message.LlmData.String, "historical answer")) {
 			t.Fatalf("child copied parent text: %#v", message)
 		}
 	}
@@ -151,11 +151,11 @@ func TestConversationService_Create(t *testing.T) {
 			}
 
 			if tt.slug != nil {
-				if conv.Slug == nil || *conv.Slug != *tt.slug {
+				if !conv.Slug.Valid || conv.Slug.String != *tt.slug {
 					t.Errorf("Expected slug %v, got %v", tt.slug, conv.Slug)
 				}
 			} else {
-				if conv.Slug != nil {
+				if conv.Slug.Valid {
 					t.Errorf("Expected nil slug, got %v", conv.Slug)
 				}
 			}
@@ -263,7 +263,7 @@ func TestConversationService_UpdateSlug(t *testing.T) {
 		return
 	}
 
-	if updated.Slug == nil || *updated.Slug != newSlug {
+	if !updated.Slug.Valid || updated.Slug.String != newSlug {
 		t.Errorf("Expected slug %s, got %v", newSlug, updated.Slug)
 	}
 
@@ -335,7 +335,7 @@ func TestConversationService_Search(t *testing.T) {
 
 	// Verify the results contain "project"
 	for _, conv := range results {
-		if conv.Slug == nil || !strings.Contains(*conv.Slug, "project") {
+		if !conv.Slug.Valid || !strings.Contains(conv.Slug.String, "project") {
 			t.Errorf("Expected conversation slug to contain 'project', got %v", conv.Slug)
 		}
 	}
@@ -474,10 +474,10 @@ func TestConversationService_MultipleNullSlugs(t *testing.T) {
 	}
 
 	// Both should have null slugs
-	if conv1.Slug != nil {
+	if conv1.Slug.Valid {
 		t.Errorf("Expected first conversation slug to be nil, got %v", conv1.Slug)
 	}
-	if conv2.Slug != nil {
+	if conv2.Slug.Valid {
 		t.Errorf("Expected second conversation slug to be nil, got %v", conv2.Slug)
 	}
 
@@ -649,10 +649,10 @@ func TestConversationService_SearchArchivedConversations(t *testing.T) {
 		t.Errorf("Expected 1 archived conversation matching search, got %d", len(conversations))
 	}
 
-	if len(conversations) > 0 && conversations[0].Slug == nil {
+	if len(conversations) > 0 && !conversations[0].Slug.Valid {
 		t.Error("Expected conversation to have a slug")
-	} else if len(conversations) > 0 && !strings.Contains(*conversations[0].Slug, "test-conversation") {
-		t.Errorf("Expected conversation slug to contain 'test-conversation', got %s", *conversations[0].Slug)
+	} else if len(conversations) > 0 && !strings.Contains(conversations[0].Slug.String, "test-conversation") {
+		t.Errorf("Expected conversation slug to contain 'test-conversation', got %s", conversations[0].Slug.String)
 	}
 }
 
@@ -718,10 +718,10 @@ func TestConversationService_UpdateConversationCwd(t *testing.T) {
 		t.Fatalf("Failed to get updated conversation: %v", err)
 	}
 
-	if updatedConv.Cwd == nil {
+	if !updatedConv.Cwd.Valid {
 		t.Error("Expected conversation to have a cwd")
-	} else if *updatedConv.Cwd != newCwd {
-		t.Errorf("Expected cwd %s, got %s", newCwd, *updatedConv.Cwd)
+	} else if updatedConv.Cwd.String != newCwd {
+		t.Errorf("Expected cwd %s, got %s", newCwd, updatedConv.Cwd.String)
 	}
 }
 
@@ -1282,10 +1282,10 @@ func TestPromoteDraftAtomicOverrides(t *testing.T) {
 	if promoted.IsDraft || promoted.Draft != "" {
 		t.Fatalf("promoted row still draft-ish: is_draft=%v draft=%q", promoted.IsDraft, promoted.Draft)
 	}
-	if promoted.Model == nil || *promoted.Model != newModel {
+	if !promoted.Model.Valid || promoted.Model.String != newModel {
 		t.Fatalf("promoted model: got %v, want %q", promoted.Model, newModel)
 	}
-	if promoted.Cwd == nil || *promoted.Cwd != newCwd {
+	if !promoted.Cwd.Valid || promoted.Cwd.String != newCwd {
 		t.Fatalf("promoted cwd: got %v, want %q", promoted.Cwd, newCwd)
 	}
 	if got := ParseConversationOptions(promoted.ConversationOptions); got.ThinkingLevel != "high" {
@@ -1301,7 +1301,7 @@ func TestPromoteDraftAtomicOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	if after.Model == nil || *after.Model != newModel {
+	if !after.Model.Valid || after.Model.String != newModel {
 		t.Fatalf("lost-race promote mutated model: got %v", after.Model)
 	}
 
@@ -1314,10 +1314,10 @@ func TestPromoteDraftAtomicOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("promote2: %v", err)
 	}
-	if promoted2.Model == nil || *promoted2.Model != origModel {
+	if !promoted2.Model.Valid || promoted2.Model.String != origModel {
 		t.Fatalf("promote2 model: got %v, want %q", promoted2.Model, origModel)
 	}
-	if promoted2.Cwd == nil || *promoted2.Cwd != origCwd {
+	if !promoted2.Cwd.Valid || promoted2.Cwd.String != origCwd {
 		t.Fatalf("promote2 cwd: got %v, want %q", promoted2.Cwd, origCwd)
 	}
 	if got := ParseConversationOptions(promoted2.ConversationOptions); got.ThinkingLevel != "low" {
@@ -1529,7 +1529,7 @@ func TestListFrozenParentMessagesReturnsExactPointerPrefix(t *testing.T) {
 		}
 	}
 	var first llm.Message
-	if err := json.Unmarshal([]byte(*messages[1].LlmData), &first); err != nil || first.Content[0].Text != "message-0" {
+	if err := json.Unmarshal([]byte(messages[1].LlmData.String), &first); err != nil || first.Content[0].Text != "message-0" {
 		t.Fatalf("oldest retained message = %#v, %v", first, err)
 	}
 }

@@ -113,11 +113,11 @@ func findPiCutPoint(messages []llm.Message, keepRecentTokens int) int {
 // placeholder ("Distillation written to ..."); the summary lives in user_data.
 // Returns ok=false when the message is not such a message.
 func resolveDistilledContent(m generated.Message) (string, bool) {
-	if m.UserData == nil {
+	if !m.UserData.Valid {
 		return "", false
 	}
 	var userData map[string]string
-	if err := json.Unmarshal([]byte(*m.UserData), &userData); err != nil {
+	if err := json.Unmarshal([]byte(m.UserData.String), &userData); err != nil {
 		return "", false
 	}
 	if userData["distilled"] != "true" {

@@ -38,11 +38,11 @@ func TestMessageUserOnlyForTopLevel(t *testing.T) {
 func (c *compactTestConversation) lastMessageUserResult() (rowID string, result llm.Content) {
 	c.t.Helper()
 	for _, m := range listMessages(c.t, c.database, c.id) {
-		if m.LlmData == nil {
+		if !m.LlmData.Valid {
 			continue
 		}
 		var msg llm.Message
-		if err := json.Unmarshal([]byte(*m.LlmData), &msg); err != nil {
+		if err := json.Unmarshal([]byte(m.LlmData.String), &msg); err != nil {
 			c.t.Fatal(err)
 		}
 		for _, ct := range msg.Content {
@@ -81,11 +81,11 @@ func TestMessageUserEndToEnd(t *testing.T) {
 	var firstID string
 	var firstSeq, secondSeq int64
 	for _, m := range listMessages(t, c.database, c.id) {
-		if m.Type == string(db.MessageTypeUser) && m.LlmData != nil && strings.Contains(*m.LlmData, "first   message") {
+		if m.Type == string(db.MessageTypeUser) && m.LlmData.Valid && strings.Contains(m.LlmData.String, "first   message") {
 			firstID = m.MessageID
 			firstSeq = m.SequenceID
 		}
-		if m.Type == string(db.MessageTypeUser) && m.LlmData != nil && strings.Contains(*m.LlmData, "second message") {
+		if m.Type == string(db.MessageTypeUser) && m.LlmData.Valid && strings.Contains(m.LlmData.String, "second message") {
 			secondSeq = m.SequenceID
 		}
 	}

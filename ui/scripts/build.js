@@ -23,7 +23,9 @@ function monacoExternalPlugin() {
     name: "monaco-external",
     setup(build) {
       build.onResolve({ filter: /^monaco-editor(\/|$)/ }, () => ({
-        path: "/monaco-editor.js",
+        // Module-relative: resolved against the importing bundle, so it works
+        // under any mount (a module specifier ignores the page's <base>).
+        path: "./monaco-editor.js",
         external: true,
       }));
       const monacoVimEsm = path.resolve(process.cwd(), "node_modules/monaco-vim/dist/index.mjs");
@@ -174,7 +176,7 @@ async function build() {
       minify: isProd,
       sourcemap: !noSourceMaps,
       metafile: true,
-      external: ["monaco-editor", "/monaco-editor.js", "/ghostty-web.js"],
+      external: ["monaco-editor", "./monaco-editor.js", "./ghostty-web.js"],
       loader: {
         ".png": "dataurl",
         ".svg": "text",

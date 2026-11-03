@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/guregu/null/v5"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -112,7 +113,7 @@ func (s *Server) reuseSearchConversation(ctx context.Context, name, modelID, ema
 	var conversation generated.Conversation
 	err := s.db.Pool().Rx(ctx, func(ctx context.Context, rx *db.Rx) error {
 		var err error
-		conversation, err = generated.New(rx.Conn()).GetConversationBySlug(ctx, &name)
+		conversation, err = generated.New(rx.Conn()).GetConversationBySlug(ctx, null.StringFrom(name))
 		return err
 	})
 	if errors.Is(err, sql.ErrNoRows) {
@@ -142,7 +143,7 @@ func (s *Server) reuseSearchConversation(ctx context.Context, name, modelID, ema
 	err = manager.resetLoopAfter(true, func() error {
 		var err error
 		conversation, err = db.WithTxRes(s.db, ctx, func(q *generated.Queries) (generated.Conversation, error) {
-			if err := q.ForceUpdateConversationModel(ctx, generated.ForceUpdateConversationModelParams{Model: &modelID, ConversationID: conversation.ConversationID}); err != nil {
+			if err := q.ForceUpdateConversationModel(ctx, generated.ForceUpdateConversationModelParams{Model: null.StringFrom(modelID), ConversationID: conversation.ConversationID}); err != nil {
 				return generated.Conversation{}, err
 			}
 			if err := q.UpdateConversationOptions(ctx, generated.UpdateConversationOptionsParams{ConversationOptions: string(options), ConversationID: conversation.ConversationID}); err != nil {

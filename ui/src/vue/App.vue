@@ -277,7 +277,7 @@
         :is-open="!!editorFilePath"
         :path="editorFilePath"
         :title="`Edit ${tildifyPath(editorFilePath)}`"
-        :load-url="`/api/read-file?path=${encodeURIComponent(editorFilePath)}`"
+        :load-url="`api/read-file?path=${encodeURIComponent(editorFilePath)}`"
         commentable
         @close="editorFilePath = null"
         @comment="onEditorComment"
@@ -345,6 +345,7 @@ import { provideOpenFileEditor } from "./composables/fileEditor";
 import { useFeatureFlag } from "./composables/featureFlags";
 import { useMobileDrawerSwipe } from "./composables/mobileDrawerSwipe";
 import PerfHud from "./components/PerfHud.vue";
+import { routePath } from "../utils/basePath";
 
 const perfHudEnabled = useFeatureFlag("performance-hud");
 
@@ -356,7 +357,7 @@ function isGeneratedId(slug: string | null): boolean {
   return /^c[a-z0-9]+$/i.test(slug);
 }
 function getSlugFromPath(): string | null {
-  const path = window.location.pathname;
+  const path = routePath();
   if (path.startsWith("/c/")) {
     const slug = path.slice(3);
     if (slug) return slug;
@@ -364,7 +365,7 @@ function getSlugFromPath(): string | null {
   return null;
 }
 function isNewPath(): boolean {
-  return window.location.pathname === "/new";
+  return routePath() === "/new";
 }
 
 // A brand-new-conversation draft composed offline never reaches the server
@@ -390,8 +391,8 @@ function updateUrlWithSlug(conversation: Conversation | undefined) {
     newSlug = conversation.conversation_id;
   }
   if (currentSlug !== newSlug) {
-    if (newSlug) window.history.replaceState({}, "", `/c/${newSlug}`);
-    else window.history.replaceState({}, "", "/");
+    if (newSlug) window.history.replaceState({}, "", `c/${newSlug}`);
+    else window.history.replaceState({}, "", "./");
   }
 }
 
@@ -516,7 +517,7 @@ function handleTerminalClose(id: string) {
   setEphemeralTerminals((prev) => {
     const tm = prev.find((x) => x.id === id);
     if (tm && tm.termId) {
-      fetch(`/api/terminals/${encodeURIComponent(tm.termId)}`, { method: "DELETE" }).catch((err) =>
+      fetch(`api/terminals/${encodeURIComponent(tm.termId)}`, { method: "DELETE" }).catch((err) =>
         console.warn("failed to delete terminal:", err),
       );
     }
@@ -768,7 +769,7 @@ async function resolveInitialSlug(convs: Conversation[]): Promise<Conversation |
   } catch (err) {
     console.error("Failed to resolve slug:", err);
   }
-  window.history.replaceState({}, "", "/");
+  window.history.replaceState({}, "", "./");
   return null;
 }
 
@@ -830,7 +831,7 @@ async function startNewConversation(): Promise<boolean> {
   }
   currentConversationId.value = null;
   viewedConversation.value = null;
-  window.history.replaceState({}, "", "/new");
+  window.history.replaceState({}, "", "new");
   drawerOpen.value = false;
   return true;
 }
@@ -839,7 +840,7 @@ function startNewConversationWithCwd(cwd: string | null) {
   if (cwd) localStorage.setItem("shelley_selected_cwd", cwd);
   currentConversationId.value = null;
   viewedConversation.value = null;
-  window.history.replaceState({}, "", "/new");
+  window.history.replaceState({}, "", "new");
   drawerOpen.value = false;
   cwdSyncTrigger.value++;
 }
@@ -1174,7 +1175,7 @@ watch(
 onMounted(() => {
   // Hydrate persistent terminals from the server.
   let cancelled = false;
-  fetch("/api/terminals")
+  fetch("api/terminals")
     .then((r) => (r.ok ? r.json() : []))
     .then(
       (

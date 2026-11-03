@@ -62,7 +62,7 @@ func conversationSettings(conv generated.Conversation) ConversationSettings {
 		Profile: opts.Profile,
 		Edited:  opts.SettingsEdited,
 		Settings: Settings{
-			Model:                 derefString(conv.Model),
+			Model:                 derefString(conv.Model.Ptr()),
 			ThinkingLevel:         opts.ThinkingLevel,
 			ToolOverrides:         orEmpty(opts.ToolOverrides),
 			CompactNudgeTokens:    opts.CompactNudgeTokens,
@@ -344,7 +344,7 @@ func (s *Server) followProfile(ctx context.Context, cm *ConversationManager) (ll
 		if err != nil {
 			return cur, err
 		}
-		if conv.ExternalConversationID != nil {
+		if conv.ExternalConversationID.Valid {
 			to.ToolOverrides[claudetool.MessageUserName] = "on"
 		}
 		next = to

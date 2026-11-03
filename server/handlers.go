@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"cmp"
 	"compress/gzip"
 	"context"
 	"crypto/rand"
@@ -10,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/guregu/null/v5"
 	"html"
 	"io"
 	"mime"
@@ -579,15 +581,9 @@ func (s *Server) serveIndexWithInit(w http.ResponseWriter, r *http.Request, fs h
 	defaultModel := s.effectiveDefaultModel(modelList)
 	markDefaultModel(modelList, defaultModel)
 
-	// Get hostname (add .exe.xyz suffix if no dots, matching system_prompt.go)
-	hostname := "localhost"
-	if h, err := os.Hostname(); err == nil {
-		if !strings.Contains(h, ".") {
-			hostname = h + ".exe.xyz"
-		} else {
-			hostname = h
-		}
-	}
+	// The hostname the page names: the public base's, else the one this
+	// request reached (never a guess from the machine's name).
+	hostname := cmp.Or(s.publicHost(), r.Host)
 
 	// Get default working directory
 	defaultCwd, err := os.Getwd()
@@ -649,6 +645,9 @@ func (s *Server) serveIndexWithInit(w http.ResponseWriter, r *http.Request, fs h
 
 	// Inject notification channel type metadata for the settings modal
 	initData["notification_channel_types"] = s.getNotificationChannelTypes()
+	// The path the server is mounted at ("/" unless an embedder mounts it
+	// under a prefix): the UI reads its routes relative to it.
+	initData["base_path"] = s.basePath()
 	// Whether this VM has an exe.dev "notify" integration, so the UI can show
 	// the auto-configured push-notification toggle.
 	initData["exe_notify_available"] = s.exeNotifyAvailable()
@@ -673,6 +672,10 @@ func (s *Server) serveIndexWithInit(w http.ResponseWriter, r *http.Request, fs h
 	initScript := fmt.Sprintf(`<script>window.__SHELLEY_INIT__=%s;</script>`, initJSON)
 	injection := faviconLink + initScript
 	modifiedHTML := strings.Replace(string(indexHTML), "</head>", injection+"</head>", 1)
+	// <base> first in <head>, so every relative URL after it (the page's
+	// assets, the UI's API calls) resolves under the server's mount.
+	baseTag := fmt.Sprintf(`<base href="%s"/>`, html.EscapeString(s.basePath()))
+	modifiedHTML = strings.Replace(modifiedHTML, "<head>", "<head>"+baseTag, 1)
 
 	w.Write([]byte(modifiedHTML))
 }
@@ -789,8 +792,8 @@ func (s *Server) decorateConversations(conversations []db.ConversationListItem) 
 	for i, item := range conversations {
 		conv := item.Conversation
 		cws := ConversationWithState{ConversationListItem: item, Working: conv.AgentWorking}
-		if conv.Cwd != nil {
-			cwd := *conv.Cwd
+		if conv.Cwd.Valid {
+			cwd := conv.Cwd.String
 			entry, ok := gitEntries[cwd]
 			if !ok {
 				entry, ok = s.conversationListGitCache.get(cwd, now)
@@ -1056,7 +1059,7 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	skillCwd := derefString(existing.Cwd)
+	skillCwd := derefString(existing.Cwd.Ptr())
 	if existing.IsDraft && req.Cwd != "" {
 		skillCwd = req.Cwd
 	}
@@ -1083,11 +1086,11 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 	// push "Reply" handler, which fires from a background launch with no
 	// loaded chat state — send an empty `model`; case 1 covers them too.
 	modelID := req.Model
-	if existing.Model != nil && *existing.Model != "" && (!existing.IsDraft || modelID == "") {
+	if existing.Model.Valid && existing.Model.String != "" && (!existing.IsDraft || modelID == "") {
 		// Non-draft: persisted model wins outright (stale req.Model ignored).
 		// Draft: persisted model is only the fallback when the request omits
 		// one; an explicit req.Model on a draft retargets it (handled below).
-		modelID = *existing.Model
+		modelID = existing.Model.String
 	}
 	if modelID == "" {
 		modelID = s.effectiveDefaultModel(s.getModelList())
@@ -1171,7 +1174,7 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 		result := RunSlashCommandHook(SlashCommandHookInput{
 			RawMessage:     req.Message,
 			ConversationID: conversationID,
-			Cwd:            derefString(existing.Cwd),
+			Cwd:            derefString(existing.Cwd.Ptr()),
 			Model:          modelID,
 			UserEmail:      userEmail,
 		})
@@ -1235,7 +1238,7 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 		// newConversationSettings. The draft's own model and settings count
 		// as set, where set, and the request's override them.
 		stored := db.ParseConversationOptions(existing.ConversationOptions)
-		change := storedSettingsChange(derefString(existing.Model), stored)
+		change := storedSettingsChange(derefString(existing.Model.Ptr()), stored)
 		conversationOptions := stored
 		if req.ConversationOptions != nil {
 			conversationOptions = req.ConversationOptions.ConversationOptions
@@ -1271,7 +1274,7 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 		if req.Cwd != "" {
 			cwdOverride = &req.Cwd
 		}
-		if modelID != derefString(existing.Model) {
+		if modelID != derefString(existing.Model.Ptr()) {
 			modelOverride = &modelID
 		}
 		promoted, err := s.db.PromoteDraft(ctx, conversationID, cwdOverride, modelOverride, &conversationOptions)
@@ -1287,12 +1290,12 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 		case err != nil:
 			s.internalError(w, "Failed to promote draft", err, "conversationID", conversationID)
 			return
-		case req.Model == "" && promoted.Model != nil && *promoted.Model != "" && *promoted.Model != modelID:
+		case req.Model == "" && promoted.Model.Valid && promoted.Model.String != "" && promoted.Model.String != modelID:
 			// An omitted-model send resolves to the draft's persisted model,
 			// but a PUT /draft may have retargeted it after our read above.
 			// The promoted row is authoritative — re-resolve so the loop pins
 			// to the model the user actually picked.
-			modelID = *promoted.Model
+			modelID = promoted.Model.String
 			llmService, err = s.llmManager.GetService(modelID)
 			if err != nil {
 				s.logger.Error("Unsupported model on promoted draft", "model", modelID, "error", err)
@@ -1567,7 +1570,7 @@ func (s *Server) handleNewConversation(w http.ResponseWriter, r *http.Request) {
 		if err := s.db.UpdateConversationCwd(ctx, conversationID, hookResult.Cwd); err != nil {
 			s.logger.Error("Failed to update cwd from hook", "error", err)
 		} else {
-			conversation.Cwd = &hookResult.Cwd
+			conversation.Cwd = null.StringFrom(hookResult.Cwd)
 		}
 	}
 	if hookResult.Model != modelID {
@@ -1823,9 +1826,9 @@ func (s *Server) handleRetryConversation(w http.ResponseWriter, r *http.Request,
 	}
 	// Inspect user_data to enforce retryable=true before spinning up a loop
 	// with tools and a 12-hour context. Never mutate the row.
-	if latest.UserData != nil && *latest.UserData != "" {
+	if latest.UserData.Valid && latest.UserData.String != "" {
 		var ud map[string]any
-		if err := json.Unmarshal([]byte(*latest.UserData), &ud); err == nil {
+		if err := json.Unmarshal([]byte(latest.UserData.String), &ud); err == nil {
 			if retryable, _ := ud["retryable"].(bool); !retryable {
 				http.Error(w, "error is not retryable", http.StatusConflict)
 				return
@@ -1929,9 +1932,9 @@ func (s *Server) handleContinueConversation(w http.ResponseWriter, r *http.Reque
 		json.NewEncoder(w).Encode(map[string]string{"status": "not_applicable"})
 		return
 	}
-	if latest.UserData != nil && *latest.UserData != "" {
+	if latest.UserData.Valid && latest.UserData.String != "" {
 		var ud map[string]any
-		if err := json.Unmarshal([]byte(*latest.UserData), &ud); err == nil {
+		if err := json.Unmarshal([]byte(latest.UserData.String), &ud); err == nil {
 			if errType, _ := ud["error_type"].(string); errType != string(llm.ErrorTypeRefusal) {
 				http.Error(w, "latest error is not a refusal", http.StatusConflict)
 				return
@@ -3911,8 +3914,8 @@ func (s *Server) handleForkConversation(w http.ResponseWriter, r *http.Request, 
 	// using the source slug as a base; ForkConversation left the slug nil.
 	if source, serr := s.db.GetConversationByID(ctx, conversationID); serr == nil && source != nil {
 		base := "fork"
-		if source.Slug != nil && *source.Slug != "" {
-			base = *source.Slug + "-fork"
+		if source.Slug.Valid && source.Slug.String != "" {
+			base = source.Slug.String + "-fork"
 		}
 		if sanitized := slug.Sanitize(base); sanitized != "" {
 			for attempt := range db.SlugAttempts {
@@ -3958,11 +3961,11 @@ func (s *Server) applyForkPointModelState(ctx context.Context, sourceID, forkID 
 	var haveReasoning bool
 	var settingsAtFork *ConversationSettings
 	for _, m := range msgs {
-		if m.SequenceID <= cutoff || m.Type != string(db.MessageTypeModelChange) || m.UserData == nil {
+		if m.SequenceID <= cutoff || m.Type != string(db.MessageTypeModelChange) || !m.UserData.Valid {
 			continue
 		}
 		var ud ModelChangeUserData
-		if err := json.Unmarshal([]byte(*m.UserData), &ud); err != nil {
+		if err := json.Unmarshal([]byte(m.UserData.String), &ud); err != nil {
 			continue // informational markers / malformed payloads carry no state
 		}
 		if ud.Previous != nil {

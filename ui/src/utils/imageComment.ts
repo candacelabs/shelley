@@ -11,6 +11,8 @@
 // The region is an ImageMagick geometry (WxH+X+Y) so the agent can crop exactly
 // what the user circled (`magick shot.png -crop 300x180+120+340 crop.png`).
 
+import { routePath } from "./basePath";
+
 /** A region of an image, in whole pixels of some coordinate space. */
 export interface ImageRegion {
   x: number;
@@ -84,7 +86,7 @@ export function imageRefFromSrc(src: string, path?: string): string {
   // message input would be useless (and expensive), so name it instead.
   if (/^data:/i.test(src)) return "(inline image)";
   const url = sameOriginURL(src);
-  const fromQuery = url?.pathname.startsWith("/api/") ? url.searchParams.get("path") : null;
+  const fromQuery = url && routePath(url.pathname).startsWith("/api/") ? url.searchParams.get("path") : null;
   return fromQuery || src;
 }
 

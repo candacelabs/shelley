@@ -1,3 +1,73 @@
+> **Candace Labs' fork of [boldsoftware/shelley](https://github.com/boldsoftware/shelley).** Upstream Shelley runs as its own program: a SQLite file, tools on the host's shell, served at `/`. [csf](https://github.com/candacelabs) runs Shelley *inside* its own server instead: one process, one PostgreSQL, every tool call in a sandbox, at `/shelley/`. These are the changes that takes. Upstream's README follows below.
+>
+> ## Why we forked
+>
+> | | boldsoftware/shelley | this fork |
+> |---|---|---|
+> | store | SQLite file (`db.New("shelley.db")`) | **PostgreSQL** you open (`db.NewFromDB(sqlDB, dir)`), tables in schema `shelley` |
+> | where tools run | the host's shell ("bring your own sandboxing") | wherever your `claudetool.Sandbox` says |
+> | mount point | the site root only | any path prefix (`/shelley/`) |
+> | links it hands out | guessed: `os.Hostname()` + `.exe.xyz`, `https` | the public base you set, or none |
+>
+> ## What's different
+>
+> ### PostgreSQL instead of SQLite
+>
+> ```go
+> // upstream
+> store, _ := db.New(db.Config{DSN: "shelley.db"})
+>
+> // this fork: your pool, your server; create the tables once
+> sqlDB, _ := sql.Open("pgx", os.Getenv("DATABASE_URL"))
+> _ = db.CreateSchema(ctx, sqlDB)            // db/postgres_schema.sql, if not there yet
+> store, _ := db.NewFromDB(sqlDB, stateDir)
+> ```
+>
+> Or apply the schema yourself: `psql "$DATABASE_URL" --single-transaction -f db/postgres_schema.sql`.
+>
+> ### Tools run where you say
+>
+> ```go
+> // upstream: bash runs `go test ./...` on this host, in the conversation's cwd
+>
+> // this fork: implement two methods, and every tool goes through them
+> type Sandbox interface {
+>     WorkingDir(ctx context.Context, conversationID string) (string, error) // where the tools work
+>     Wrap(conversationID, command, wd string) string                       // e.g. "sandbox-entry -- bash -c '…'"
+> }
+> tools := claudetool.ToolSetConfig{Sandbox: mySandbox}
+> ```
+>
+> A nil `Sandbox` is upstream's behavior.
+>
+> ### Served under a path prefix
+>
+> ```go
+> srv := server.NewServer(store, llms, tools, logger, false, defaultModel, "")
+> srv.SetPublicBase(must(url.Parse("https://example.com/shelley")))
+> mux := http.NewServeMux()
+> srv.RegisterRoutes(mux)
+> http.Handle("/shelley/", http.StripPrefix("/shelley", mux))
+> ```
+>
+> | | upstream | this fork |
+> |---|---|---|
+> | page | `<script src="/main.js">`, calls `/api/…` | `<base href="/shelley/">`; every asset, call, worker and route is relative |
+> | conversation link | `https://<hostname>.exe.xyz/c/<slug>` | `https://example.com/shelley/c/<slug>` |
+>
+> With no public base set, the page works at `/` as upstream's does, and notifications carry no link.
+>
+> ## Status
+>
+> | | |
+> |---|---|
+> | based on | upstream `73fe06f` |
+> | not merged yet | upstream's 60 later commits: they add 10 SQLite migrations (projects, workspaces, project VMs, message routes) and ~900 lines of SQLite queries that must be ported to PostgreSQL first. Upstream is merged in, never rebased over. |
+> | `db` tests | on PostgreSQL (a throwaway cluster from `initdb` on `PATH`, or `SHELLEY_TEST_DATABASE_URL`): 82 pass; 21 written for SQLite (`PRAGMA`, `sqlite_schema`, FTS5 snippets) still fail |
+> | `ui` | type checks and unit tests pass |
+
+---
+
 # Shelley: a coding agent for exe.dev
 
 [shelley.dev](https://shelley.dev/)

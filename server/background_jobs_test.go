@@ -28,11 +28,11 @@ func backgroundJobNotices(t *testing.T, database *db.DB, conversationID string) 
 	}
 	var out []backgroundJobUserData
 	for _, m := range msgs {
-		if m.Type != string(db.MessageTypeUser) || m.UserData == nil {
+		if m.Type != string(db.MessageTypeUser) || !m.UserData.Valid {
 			continue
 		}
 		var data backgroundJobUserData
-		if err := json.Unmarshal([]byte(*m.UserData), &data); err != nil {
+		if err := json.Unmarshal([]byte(m.UserData.String), &data); err != nil {
 			t.Fatal(err)
 		}
 		if data.BackgroundJobID != "" {

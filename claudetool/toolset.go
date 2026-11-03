@@ -90,6 +90,9 @@ type ToolSetConfig struct {
 	DBPath string
 	// ParentConversationID is the ID of the parent conversation (for subagent tool).
 	ParentConversationID string
+	// Sandbox, if set, is where the conversation's commands run and whose
+	// directory its tools work in (csf: one sandbox per conversation).
+	Sandbox Sandbox
 	// ConversationID is the ID of the conversation these tools belong to.
 	// This is exposed to bash commands via the SHELLEY_CONVERSATION_ID environment variable.
 	ConversationID string
@@ -203,6 +206,11 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 			workingDir = "/"
 		}
 	}
+	if cfg.Sandbox != nil {
+		if dir, err := cfg.Sandbox.WorkingDir(ctx, cfg.ConversationID); err == nil {
+			workingDir = dir
+		}
+	}
 	wd := NewMutableWorkingDir(workingDir)
 	gitTracker := gitstate.NewTracker(wd.Get)
 
@@ -218,6 +226,10 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 		Env:              env,
 		Jobs:             cfg.BackgroundJobs,
 		BackgroundAfter:  cfg.BashBackgroundAfter,
+	}
+	if cfg.Sandbox != nil {
+		sandbox, conversation := cfg.Sandbox, cfg.ConversationID
+		bashTool.Wrap = func(command, wd string) string { return sandbox.Wrap(conversation, command, wd) }
 	}
 
 	patchProvider, patchProfile := "", "nested"

@@ -193,9 +193,10 @@ async function connect(size?: { cols: number; rows: number }, focus = false) {
     if (props.model) params.set("model", props.model);
   }
   titleParser.reset();
-  const socket = new WebSocket(
-    `${protocol}//${window.location.host}/api/exec-ws?${params.toString()}`,
-  );
+  // Resolved against the page's <base>, so it reaches Shelley under a mount.
+  const endpoint = new URL(`api/exec-ws?${params.toString()}`, document.baseURI);
+  endpoint.protocol = protocol;
+  const socket = new WebSocket(endpoint);
   ws = socket;
 
   socket.onopen = () => {

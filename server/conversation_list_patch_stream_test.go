@@ -52,7 +52,7 @@ func TestConversationListPatchStreamInitialResetAndNewConversation(t *testing.T)
 		t.Fatalf("expected single add op, got %+v", update.Patch)
 	}
 	state = mustApplyPatch(t, state, update.Patch)
-	if len(state) != 1 || state[0].Slug == nil || *state[0].Slug != slug {
+	if len(state) != 1 || !state[0].Slug.Valid || state[0].Slug.String != slug {
 		t.Fatalf("unexpected state: %+v", state)
 	}
 	verifyHash(t, state, update.NewHash)
@@ -138,7 +138,7 @@ func TestConversationListPatchStreamUnknownHashStartsOver(t *testing.T) {
 	}
 	state := []ConversationWithState{}
 	state = mustApplyPatch(t, state, event.Patch)
-	if len(state) != 1 || state[0].Slug == nil || *state[0].Slug != slug {
+	if len(state) != 1 || !state[0].Slug.Valid || state[0].Slug.String != slug {
 		t.Fatalf("unexpected reset state: %+v", state)
 	}
 	cancel()

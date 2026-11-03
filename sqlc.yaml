@@ -1,19 +1,28 @@
+# Shelley's store is PostgreSQL (schema shelley, db/postgres_schema.sql): the
+# queries in db/query are ported from Shelley's SQLite ones and generate into
+# package generated, so Shelley's call sites stay as they are. Everything this
+# needs is in this tree; csf applies the same schema as its migration 057.
 version: "2"
 sql:
-  - engine: "sqlite"
+  - engine: "postgresql"
     queries: "db/query/"
     schema:
-      - "db/schema/"
-      # Stubs for things sqlc's parser doesn't understand (e.g. FTS5
-      # virtual tables and their hidden rank / MATCH columns). Loaded
-      # after db/schema/ so the real migrations win at runtime.
-      - "db/sqlc-stubs/"
+      - "db/postgres_schema.sql"
     gen:
       go:
         package: "generated"
         out: "db/generated/"
+        sql_package: "database/sql"
         emit_json_tags: true
         emit_empty_slices: true
-        emit_pointers_for_null_types: true
         json_tags_case_style: "snake"
         omit_unused_structs: true
+        # A nullable column is a guregu/null value, never a Go pointer (ruling
+        # nullable-is-guregu-null).
+        overrides:
+          - { db_type: "text", nullable: true, go_type: { import: "github.com/guregu/null/v5", type: "String" } }
+          - { db_type: "pg_catalog.int8", nullable: true, go_type: { import: "github.com/guregu/null/v5", type: "Int" } }
+          - { db_type: "pg_catalog.float8", nullable: true, go_type: { import: "github.com/guregu/null/v5", type: "Float" } }
+          - { db_type: "pg_catalog.bool", nullable: true, go_type: { import: "github.com/guregu/null/v5", type: "Bool" } }
+          - { db_type: "pg_catalog.timestamptz", nullable: true, go_type: { import: "github.com/guregu/null/v5", type: "Time" } }
+          - { db_type: "pg_catalog.timestamptz", nullable: false, go_type: { import: "time", type: "Time" } }

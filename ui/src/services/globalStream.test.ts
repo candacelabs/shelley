@@ -432,7 +432,7 @@ await run("reloads when exe.dev requires authentication", async () => {
   await Promise.resolve();
 
   assert(fetchCalls === 1, "probed the same-origin Shelley endpoint once");
-  assert(fetchURL === "/api/upload/raw", "used the cheap capability endpoint");
+  assert(fetchURL === "api/upload/raw", "used the cheap capability endpoint");
   assert(fetchRedirect === "manual", "kept the login redirect observable");
   assert(reloadCalls === 1, "reloaded into the exe.dev authentication flow");
   assert(timers.length === 0, "cancelled the reconnect timer before reloading");

@@ -23,13 +23,13 @@ func TestPredictableFailRecordsWarningMessage(t *testing.T) {
 		}
 		messages = messages[:0]
 		for _, msg := range msgs {
-			if msg.Type != string(db.MessageTypeWarning) || msg.UserData == nil {
+			if msg.Type != string(db.MessageTypeWarning) || !msg.UserData.Valid {
 				continue
 			}
 			var userData struct {
 				Text string `json:"text"`
 			}
-			if err := json.Unmarshal([]byte(*msg.UserData), &userData); err != nil {
+			if err := json.Unmarshal([]byte(msg.UserData.String), &userData); err != nil {
 				t.Fatalf("warning user_data: %v", err)
 			}
 			messages = append(messages, userData.Text)

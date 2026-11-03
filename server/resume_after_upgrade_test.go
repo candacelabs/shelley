@@ -130,10 +130,10 @@ func TestResumeAfterUpgradeRestart(t *testing.T) {
 			continue
 		}
 		var ud map[string]any
-		if m.UserData == nil {
+		if !m.UserData.Valid {
 			t.Fatal("warning has no user_data")
 		}
-		if err := json.Unmarshal([]byte(*m.UserData), &ud); err != nil {
+		if err := json.Unmarshal([]byte(m.UserData.String), &ud); err != nil {
 			t.Fatalf("unmarshal warning user_data: %v", err)
 		}
 		if ud["text"] != resumeWarningText {
@@ -543,10 +543,10 @@ func TestUpgradeResumeFailureAfterInterruptedResult(t *testing.T) {
 					return nil, err
 				}
 				var message llm.Message
-				if latest.LlmData == nil {
+				if !latest.LlmData.Valid {
 					return nil, errors.New("missing interrupted result")
 				}
-				if err := json.Unmarshal([]byte(*latest.LlmData), &message); err != nil {
+				if err := json.Unmarshal([]byte(latest.LlmData.String), &message); err != nil {
 					return nil, err
 				}
 				if len(message.Content) != 1 || message.Content[0].ToolUseID != "toolu_recovery" ||
@@ -790,11 +790,11 @@ func TestResumeAfterUpgradePersistsInterruptedToolResult(t *testing.T) {
 
 	var found int
 	for _, message := range listMessages(t, database, convID) {
-		if message.UserData == nil || message.LlmData == nil {
+		if !message.UserData.Valid || !message.LlmData.Valid {
 			continue
 		}
 		var data llm.Message
-		if err := json.Unmarshal([]byte(*message.LlmData), &data); err != nil {
+		if err := json.Unmarshal([]byte(message.LlmData.String), &data); err != nil {
 			t.Fatal(err)
 		}
 		for _, content := range data.Content {

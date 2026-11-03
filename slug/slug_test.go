@@ -189,7 +189,7 @@ func TestGenerateSlug_PreservesConcurrentAssignment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fresh.Slug == nil || *fresh.Slug != assigned {
+	if !fresh.Slug.Valid || fresh.Slug.String != assigned {
 		t.Fatalf("database slug = %v, want %q", fresh.Slug, assigned)
 	}
 }
@@ -253,10 +253,10 @@ func TestGenerateSlug_PreservesExisting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to re-fetch conversation: %v", err)
 	}
-	if fresh.Slug == nil || *fresh.Slug != original {
+	if !fresh.Slug.Valid || fresh.Slug.String != original {
 		got := "<nil>"
-		if fresh.Slug != nil {
-			got = *fresh.Slug
+		if fresh.Slug.Valid {
+			got = fresh.Slug.String
 		}
 		t.Errorf("DB slug = %q, want %q", got, original)
 	}
@@ -600,7 +600,7 @@ func TestGenerateSlug_UsageOnAppendedMarker(t *testing.T) {
 	if len(messages) != 2 {
 		t.Fatalf("got %d messages, want the user message plus an appended slug marker: %+v", len(messages), messages)
 	}
-	if messages[0].Type != string(db.MessageTypeUser) || messages[0].OtherUsageData != nil {
+	if messages[0].Type != string(db.MessageTypeUser) || messages[0].OtherUsageData.Valid {
 		t.Errorf("first user message = type %q usage %v, want an untouched user message: messages are append-only",
 			messages[0].Type, messages[0].OtherUsageData)
 	}
@@ -609,7 +609,7 @@ func TestGenerateSlug_UsageOnAppendedMarker(t *testing.T) {
 	if row.Type != string(db.MessageTypeSlug) {
 		t.Fatalf("appended message type = %q, want slug", row.Type)
 	}
-	if row.OtherUsageData == nil {
+	if !row.OtherUsageData.Valid {
 		t.Fatal("slug marker carries no other_usage_data")
 	}
 	// GenerateSlug must hand the marker back so the caller can publish it: it
@@ -623,7 +623,7 @@ func TestGenerateSlug_UsageOnAppendedMarker(t *testing.T) {
 			marker.MessageID, marker.SequenceID, row.MessageID, row.SequenceID)
 	}
 	var entries []llm.PurposedUsage
-	if err := json.Unmarshal([]byte(*row.OtherUsageData), &entries); err != nil {
+	if err := json.Unmarshal([]byte(row.OtherUsageData.String), &entries); err != nil {
 		t.Fatal(err)
 	}
 	if len(entries) != 1 || entries[0].Purpose != "slug" || entries[0].InputTokens != 25 || entries[0].Model != "slug-model-v1" {
@@ -635,7 +635,7 @@ func TestGenerateSlug_UsageOnAppendedMarker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Slug == nil || *updated.Slug != "my-generated-slug" {
+	if !updated.Slug.Valid || updated.Slug.String != "my-generated-slug" {
 		t.Errorf("slug on conversation = %v, want my-generated-slug", updated.Slug)
 	}
 }

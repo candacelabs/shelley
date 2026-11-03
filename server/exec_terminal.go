@@ -93,8 +93,8 @@ func (s *Server) handleExecWS(w http.ResponseWriter, r *http.Request) {
 
 	var slug string
 	if conversationID != "" {
-		if conv, err := s.db.GetConversationByID(ctx, conversationID); err == nil && conv.Slug != nil {
-			slug = *conv.Slug
+		if conv, err := s.db.GetConversationByID(ctx, conversationID); err == nil && conv.Slug.Valid {
+			slug = conv.Slug.String
 		}
 	}
 	// Resolve the cwd before building the env so SHELLEY_CWD and

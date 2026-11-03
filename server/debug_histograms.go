@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"shelley.exe.dev/db/generated"
 	"sort"
 	"strings"
 
@@ -81,81 +82,37 @@ type labelCount struct {
 func (s *Server) collectHistogramStats(ctx context.Context) (*histogramStats, error) {
 	st := &histogramStats{}
 	err := s.db.Pool().Rx(ctx, func(ctx context.Context, rx *db.Rx) error {
-		// Per-conversation message count and stored byte size. Bytes counts
-		// the JSON payload columns the client must load and render. Note this
-		// counts all stored rows including messages from older generations
-		// retained after compaction — i.e. on-disk size, not the active set.
-		rows, err := rx.Query(`
-			SELECT COUNT(*) AS n,
-			       COALESCE(SUM(
-			           COALESCE(LENGTH(llm_data), 0) +
-			           COALESCE(LENGTH(user_data), 0) +
-			           COALESCE(LENGTH(display_data), 0)
-			       ), 0) AS bytes
-			FROM messages
-			GROUP BY conversation_id`)
+		q := generated.New(rx.Conn())
+		// Per-conversation message count and stored byte size: every stored
+		// row, older generations retained after compaction included.
+		sizes, err := q.ListConversationStorageSizes(ctx)
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var n, bytes int64
-			if err := rows.Scan(&n, &bytes); err != nil {
-				return err
-			}
-			st.MessagesPerConv = append(st.MessagesPerConv, n)
-			st.BytesPerConv = append(st.BytesPerConv, bytes)
-			st.Messages += n
-			st.Bytes += bytes
+		for _, size := range sizes {
+			st.MessagesPerConv = append(st.MessagesPerConv, size.N)
+			st.BytesPerConv = append(st.BytesPerConv, size.Bytes)
+			st.Messages += size.N
+			st.Bytes += size.Bytes
 		}
-		if err := rows.Err(); err != nil {
-			return err
-		}
-
-		// Generation distribution: bucket conversations by their current
-		// generation. Restrict to conversations that actually have messages so
-		// this reconciles with the message/bytes aggregation above (an empty
-		// conversation has no size to report).
-		genRows, err := rx.Query(`
-			SELECT c.current_generation, COUNT(*)
-			FROM conversations c
-			WHERE EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.conversation_id)
-			GROUP BY c.current_generation
-			ORDER BY c.current_generation`)
+		// Conversations by current generation, only those with messages, so
+		// it reconciles with the sizes above.
+		generations, err := q.CountConversationsByGeneration(ctx)
 		if err != nil {
 			return err
 		}
-		defer genRows.Close()
-		for genRows.Next() {
-			var gen, count int64
-			if err := genRows.Scan(&gen, &count); err != nil {
-				return err
-			}
-			st.GenerationCounts = append(st.GenerationCounts, labelCount{Label: fmt.Sprintf("%d", gen), Count: count})
+		for _, generation := range generations {
+			st.GenerationCounts = append(st.GenerationCounts, labelCount{Label: fmt.Sprintf("%d", generation.CurrentGeneration), Count: generation.Count})
 		}
-		if err := genRows.Err(); err != nil {
-			return err
-		}
-
-		// Message-type distribution across the whole DB.
-		typeRows, err := rx.Query(`
-			SELECT type, COUNT(*)
-			FROM messages
-			GROUP BY type
-			ORDER BY COUNT(*) DESC`)
+		// Message-type distribution across the whole store.
+		types, err := q.CountAllMessagesByType(ctx)
 		if err != nil {
 			return err
 		}
-		defer typeRows.Close()
-		for typeRows.Next() {
-			var typ string
-			var count int64
-			if err := typeRows.Scan(&typ, &count); err != nil {
-				return err
-			}
-			st.TypeCounts = append(st.TypeCounts, labelCount{Label: typ, Count: count})
+		for _, typ := range types {
+			st.TypeCounts = append(st.TypeCounts, labelCount{Label: typ.Type, Count: typ.Count})
 		}
-		return typeRows.Err()
+		return nil
 	})
 	if err != nil {
 		return nil, err

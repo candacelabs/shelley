@@ -120,9 +120,9 @@ func TestContinueAfterRefusalSwitchesModelAndResumes(t *testing.T) {
 	// Wait for a refusal error message to be recorded (error_type=refusal).
 	waitFor(t, 10*time.Second, func() bool {
 		for _, m := range listMessages(t, database, conversationID) {
-			if m.Type == string(db.MessageTypeError) && m.UserData != nil {
+			if m.Type == string(db.MessageTypeError) && m.UserData.Valid {
 				var ud map[string]any
-				if json.Unmarshal([]byte(*m.UserData), &ud) == nil {
+				if json.Unmarshal([]byte(m.UserData.String), &ud) == nil {
 					if et, _ := ud["error_type"].(string); et == string(llm.ErrorTypeRefusal) {
 						return true
 					}
@@ -140,9 +140,9 @@ func TestContinueAfterRefusalSwitchesModelAndResumes(t *testing.T) {
 	{
 		var found bool
 		for _, m := range listMessages(t, database, conversationID) {
-			if m.Type == string(db.MessageTypeError) && m.UserData != nil {
+			if m.Type == string(db.MessageTypeError) && m.UserData.Valid {
 				var ud map[string]any
-				if json.Unmarshal([]byte(*m.UserData), &ud) == nil {
+				if json.Unmarshal([]byte(m.UserData.String), &ud) == nil {
 					if cat, _ := ud["refusal_category"].(string); cat == "cyber" {
 						if exp, _ := ud["refusal_explanation"].(string); exp != "" {
 							model, _ := ud["refusal_model"].(string)
@@ -170,11 +170,11 @@ func TestContinueAfterRefusalSwitchesModelAndResumes(t *testing.T) {
 	// A modelchange marker (model-a -> model-b) must have been recorded.
 	waitFor(t, 5*time.Second, func() bool {
 		mc := lastModelChange(listMessages(t, database, conversationID))
-		if mc == nil || mc.UserData == nil {
+		if mc == nil || !mc.UserData.Valid {
 			return false
 		}
 		var ud ModelChangeUserData
-		if json.Unmarshal([]byte(*mc.UserData), &ud) != nil {
+		if json.Unmarshal([]byte(mc.UserData.String), &ud) != nil {
 			return false
 		}
 		return ud.To == "model-b"

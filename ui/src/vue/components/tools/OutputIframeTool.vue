@@ -174,7 +174,7 @@ const MAX_HEIGHT = 600;
 
 // /static/ paths the parent fetches for each named library.
 const LIBRARY_PATHS: Record<string, string> = {
-  excalidraw: "/static/excalidraw/skill.js",
+  excalidraw: "static/excalidraw/skill.js",
 };
 
 // Remove injected scripts/styles from HTML to get the original version for download

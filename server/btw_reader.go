@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/guregu/null/v5"
 	"net/http"
 	"strings"
 
@@ -22,7 +23,7 @@ var (
 )
 
 func isManagedChild(conversation generated.Conversation) bool {
-	return conversation.ParentConversationID != nil && !conversation.UserInitiated
+	return conversation.ParentConversationID.Valid && !conversation.UserInitiated
 }
 
 func isBtwReader(conversation generated.Conversation) bool {
@@ -80,7 +81,7 @@ func (s *Server) createBtwReader(ctx context.Context, parentID, question string)
 		return db.BtwReaderIdentity{}, errNestedBtwReader
 	}
 
-	modelID := derefString(parent.Model)
+	modelID := derefString(parent.Model.Ptr())
 	if modelID == "" {
 		modelID = s.effectiveDefaultModel(s.getModelList())
 	}
@@ -91,7 +92,7 @@ func (s *Server) createBtwReader(ctx context.Context, parentID, question string)
 	hookResult, err := RunNewConversationHookIn(s.hooksDir, NewConversationHookInput{
 		Prompt: question,
 		Model:  modelID,
-		Cwd:    derefString(parent.Cwd),
+		Cwd:    derefString(parent.Cwd.Ptr()),
 		Readonly: NewConversationReadonly{
 			ConversationID: conversationID,
 			IsSubagent:     true,
@@ -124,8 +125,8 @@ func (s *Server) createBtwReader(ctx context.Context, parentID, question string)
 		return db.BtwReaderIdentity{}, fmt.Errorf("system-prompt hook: %w", err)
 	}
 	cwd := parent.Cwd
-	if hookResult.Cwd != derefString(parent.Cwd) {
-		cwd = &hookResult.Cwd
+	if hookResult.Cwd != derefString(parent.Cwd.Ptr()) {
+		cwd = null.StringFrom(hookResult.Cwd)
 	}
 	parentOptions := db.ParseConversationOptions(parent.ConversationOptions)
 	if s.conversationDeleting(parentID) {
@@ -135,7 +136,7 @@ func (s *Server) createBtwReader(ctx context.Context, parentID, question string)
 		ConversationID: conversationID,
 		SlugBase:       btwReaderSlug(question),
 		ParentID:       parentID,
-		Cwd:            cwd,
+		Cwd:            cwd.Ptr(),
 		Model:          &modelID,
 		ParentPointer:  pointer,
 		ThinkingLevel:  parentOptions.ThinkingLevel,
@@ -270,7 +271,7 @@ func (s *Server) handleSummarizeBtwReader(w http.ResponseWriter, r *http.Request
 		http.Error(w, "BTW reader not found", http.StatusNotFound)
 		return
 	}
-	modelID := derefString(child.Model)
+	modelID := derefString(child.Model.Ptr())
 	service, err := s.llmManager.GetService(modelID)
 	if err != nil {
 		http.Error(w, "BTW reader model is unavailable", http.StatusServiceUnavailable)

@@ -47,7 +47,7 @@ func TestCreateWarningMessageCapsConsecutiveWarnings(t *testing.T) {
 	}
 
 	var userData map[string]interface{}
-	if err := json.Unmarshal([]byte(*messages[2].UserData), &userData); err != nil {
+	if err := json.Unmarshal([]byte(messages[2].UserData.String), &userData); err != nil {
 		t.Fatalf("unmarshal suppression user_data: %v", err)
 	}
 	if userData["text"] != "retrying" {

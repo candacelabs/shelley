@@ -401,12 +401,12 @@ func (h *ClaudeTestHarness) isAgentWorking() bool {
 	// Look for an assistant message with tool use that doesn't have a corresponding result
 	for i := len(messages) - 1; i >= 0; i-- {
 		msg := messages[i]
-		if msg.Type != string(db.MessageTypeAgent) || msg.LlmData == nil {
+		if msg.Type != string(db.MessageTypeAgent) || !msg.LlmData.Valid {
 			continue
 		}
 
 		var llmMsg llm.Message
-		if err := json.Unmarshal([]byte(*msg.LlmData), &llmMsg); err != nil {
+		if err := json.Unmarshal([]byte(msg.LlmData.String), &llmMsg); err != nil {
 			continue
 		}
 
@@ -417,9 +417,9 @@ func (h *ClaudeTestHarness) isAgentWorking() bool {
 				hasResult := false
 				for j := i + 1; j < len(messages); j++ {
 					nextMsg := messages[j]
-					if nextMsg.Type == string(db.MessageTypeUser) && nextMsg.LlmData != nil {
+					if nextMsg.Type == string(db.MessageTypeUser) && nextMsg.LlmData.Valid {
 						var userMsg llm.Message
-						if err := json.Unmarshal([]byte(*nextMsg.LlmData), &userMsg); err != nil {
+						if err := json.Unmarshal([]byte(nextMsg.LlmData.String), &userMsg); err != nil {
 							continue
 						}
 						for _, c := range userMsg.Content {
@@ -472,12 +472,12 @@ func (h *ClaudeTestHarness) WaitResponse() string {
 		// Start from the end to find the most recent one
 		for i := len(messages) - 1; i >= 0 && i >= minMessageCount; i-- {
 			msg := messages[i]
-			if msg.Type != string(db.MessageTypeAgent) || msg.LlmData == nil {
+			if msg.Type != string(db.MessageTypeAgent) || !msg.LlmData.Valid {
 				continue
 			}
 
 			var llmMsg llm.Message
-			if err := json.Unmarshal([]byte(*msg.LlmData), &llmMsg); err != nil {
+			if err := json.Unmarshal([]byte(msg.LlmData.String), &llmMsg); err != nil {
 				continue
 			}
 
@@ -519,12 +519,12 @@ func (h *ClaudeTestHarness) GetMessages() []generated.Message {
 func (h *ClaudeTestHarness) HasCancelledToolResult() bool {
 	messages := h.GetMessages()
 	for _, msg := range messages {
-		if msg.Type != string(db.MessageTypeUser) || msg.LlmData == nil {
+		if msg.Type != string(db.MessageTypeUser) || !msg.LlmData.Valid {
 			continue
 		}
 
 		var llmMsg llm.Message
-		if err := json.Unmarshal([]byte(*msg.LlmData), &llmMsg); err != nil {
+		if err := json.Unmarshal([]byte(msg.LlmData.String), &llmMsg); err != nil {
 			continue
 		}
 
@@ -545,12 +545,12 @@ func (h *ClaudeTestHarness) HasCancelledToolResult() bool {
 func (h *ClaudeTestHarness) HasCancellationMessage() bool {
 	messages := h.GetMessages()
 	for _, msg := range messages {
-		if msg.Type != string(db.MessageTypeAgent) || msg.LlmData == nil {
+		if msg.Type != string(db.MessageTypeAgent) || !msg.LlmData.Valid {
 			continue
 		}
 
 		var llmMsg llm.Message
-		if err := json.Unmarshal([]byte(*msg.LlmData), &llmMsg); err != nil {
+		if err := json.Unmarshal([]byte(msg.LlmData.String), &llmMsg); err != nil {
 			continue
 		}
 
@@ -752,9 +752,9 @@ func TestClaudeCancelDuringLLMCallAndVerifyMessageStructure(t *testing.T) {
 		if msg.Type == string(db.MessageTypeUser) {
 			userMessageFound = true
 		}
-		if msg.Type == string(db.MessageTypeAgent) && msg.LlmData != nil {
+		if msg.Type == string(db.MessageTypeAgent) && msg.LlmData.Valid {
 			var llmMsg llm.Message
-			if err := json.Unmarshal([]byte(*msg.LlmData), &llmMsg); err == nil {
+			if err := json.Unmarshal([]byte(msg.LlmData.String), &llmMsg); err == nil {
 				for _, content := range llmMsg.Content {
 					if content.Type == llm.ContentTypeText && strings.Contains(content.Text, "cancelled") {
 						cancelMessageFound = true

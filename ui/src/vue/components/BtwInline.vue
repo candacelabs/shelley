@@ -73,7 +73,7 @@
       <footer class="btw-inline-actions">
         <a
           class="btw-inline-action btw-inline-open-subagent"
-          :href="`/c/${exchange.reader_slug || exchange.exchange_id}`"
+          :href="`c/${exchange.reader_slug || exchange.exchange_id}`"
           @click="openSubagent"
         >
           Open subagent

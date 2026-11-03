@@ -193,7 +193,7 @@ async function withCacheKeyLock<T>(fn: () => Promise<T>): Promise<T> {
 
 /** Production fetcher hitting /api/cache-key on the same origin. */
 export class HttpCacheKeyFetcher implements CacheKeyFetcher {
-  constructor(private readonly endpoint = "/api/cache-key") {}
+  constructor(private readonly endpoint = "api/cache-key") {}
   async fetch(): Promise<CacheKeyMaterial> {
     return withCacheKeyLock(async () => {
       const { response, dispose } = fetchWithTimeout(this.endpoint, {
@@ -220,7 +220,7 @@ export class HttpCacheKeyFetcher implements CacheKeyFetcher {
     // server has already forgotten.
     cacheSessionEstablished = false;
     await withCacheKeyLock(async () => {
-      const { response, dispose } = fetchWithTimeout("/api/cache-session/clear", {
+      const { response, dispose } = fetchWithTimeout("api/cache-session/clear", {
         method: "POST",
         credentials: "include",
         cache: "no-store",

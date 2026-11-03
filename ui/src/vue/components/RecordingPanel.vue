@@ -461,7 +461,7 @@ async function uploadRecording(filename: string, body: Blob): Promise<string> {
   const controller = new AbortController();
   requestController = controller;
   try {
-    const response = await fetch(`/api/upload/raw?filename=${encodeURIComponent(filename)}`, {
+    const response = await fetch(`api/upload/raw?filename=${encodeURIComponent(filename)}`, {
       method: "POST",
       headers: { "Content-Type": body.type || "application/octet-stream" },
       body,

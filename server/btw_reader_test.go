@@ -197,10 +197,10 @@ func btwSystemData(t *testing.T, database *db.DB, conversationID string, generat
 			matches = append(matches, row)
 		}
 	}
-	if len(matches) != 1 || matches[0].LlmData == nil {
+	if len(matches) != 1 || !matches[0].LlmData.Valid {
 		t.Fatalf("generation %d system rows=%#v", generation, matches)
 	}
-	return *matches[0].LlmData
+	return matches[0].LlmData.String
 }
 
 func requireBtwStreamOpen(t *testing.T, server *Server, conversationID string) {
@@ -242,7 +242,7 @@ func TestBtwSlashHookRouting(t *testing.T) {
 			t.Fatalf("built-in ran despite hook: %#v, %v", readers, err)
 		}
 		rows := listMessages(t, database, parent.ConversationID)
-		if len(rows) < 2 || rows[1].LlmData == nil || !strings.Contains(*rows[1].LlmData, "custom hook won") {
+		if len(rows) < 2 || !rows[1].LlmData.Valid || !strings.Contains(rows[1].LlmData.String, "custom hook won") {
 			t.Fatalf("hook replacement was not sent normally: %#v", rows)
 		}
 	})
@@ -284,7 +284,7 @@ func TestBtwRunsChatMessageHook(t *testing.T) {
 		}
 	}
 	rows := listMessages(t, database, reader.ConversationID)
-	if len(rows) < 2 || rows[1].LlmData == nil || !strings.Contains(*rows[1].LlmData, "echo: chat-hooked") {
+	if len(rows) < 2 || !rows[1].LlmData.Valid || !strings.Contains(rows[1].LlmData.String, "echo: chat-hooked") {
 		t.Fatalf("chat-message hook did not rewrite reader question: %#v", rows)
 	}
 }
@@ -557,7 +557,7 @@ func TestBtwDismissRemovesReaderButPreservesChild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dismissed child missing: %v", err)
 	}
-	if child.ParentConversationID == nil || *child.ParentConversationID != parent.ConversationID {
+	if !child.ParentConversationID.Valid || child.ParentConversationID.String != parent.ConversationID {
 		t.Fatalf("dismissed child parent=%v want=%q", child.ParentConversationID, parent.ConversationID)
 	}
 	if after := listMessages(t, database, descriptor.ConversationID); len(after) != len(before) {
@@ -597,7 +597,7 @@ func TestBtwSummaryIsOrdinaryMarkedChildTurn(t *testing.T) {
 			users = append(users, row)
 		}
 	}
-	if len(users) != 2 || users[0].UserData != nil || users[1].UserData == nil || *users[1].UserData != `{"btw_turn_kind":"summary"}` {
+	if len(users) != 2 || users[0].UserData.Valid || !users[1].UserData.Valid || users[1].UserData.String != `{"btw_turn_kind":"summary"}` {
 		t.Fatalf("summary user metadata=%#v", users)
 	}
 	if messageID != users[1].MessageID {
@@ -641,8 +641,8 @@ func TestBtwRunsConversationHooksExactlyOnce(t *testing.T) {
 		}
 	}
 	rows := listMessages(t, database, descriptor.ConversationID)
-	if rows[0].LlmData == nil || !strings.Contains(*rows[0].LlmData, btwReaderRestrictionPrompt) ||
-		rows[1].LlmData == nil || !strings.Contains(*rows[1].LlmData, "echo: hooked") {
+	if !rows[0].LlmData.Valid || !strings.Contains(rows[0].LlmData.String, btwReaderRestrictionPrompt) ||
+		!rows[1].LlmData.Valid || !strings.Contains(rows[1].LlmData.String, "echo: hooked") {
 		t.Fatalf("hooked initial rows=%#v", rows)
 	}
 }
@@ -672,8 +672,8 @@ func TestConversationDeletionWithUserInitiatedChildKeepsGenericForeignKeyFailure
 		}
 	}
 	preserved, err := database.GetConversationByID(ctx, child.ConversationID)
-	if err != nil || preserved.ParentConversationID == nil ||
-		*preserved.ParentConversationID != parent.ConversationID {
+	if err != nil || !preserved.ParentConversationID.Valid ||
+		preserved.ParentConversationID.String != parent.ConversationID {
 		t.Fatalf("lineage parent=%v err=%v, want %s", preserved.ParentConversationID, err, parent.ConversationID)
 	}
 }
@@ -706,8 +706,8 @@ func TestBtwParentDeletionWithUserInitiatedLineageRetainsGenericFailure(t *testi
 		}
 	}
 	preserved, err := database.GetConversationByID(ctx, lineage.ConversationID)
-	if err != nil || preserved.ParentConversationID == nil ||
-		*preserved.ParentConversationID != parent.ConversationID {
+	if err != nil || !preserved.ParentConversationID.Valid ||
+		preserved.ParentConversationID.String != parent.ConversationID {
 		t.Fatalf("lineage parent=%v err=%v, want %s", preserved.ParentConversationID, err, parent.ConversationID)
 	}
 	server.mu.Lock()
@@ -752,7 +752,7 @@ func TestBtwLeavesOrdinaryChatBehaviorUnchanged(t *testing.T) {
 		ChatRequest{Message: "echo: ordinary", Model: "predictable"}), http.StatusAccepted)
 	held.waitCall(t, "echo: ordinary")
 	rows := listMessages(t, database, parent.ConversationID)
-	if len(rows) < 2 || rows[1].UserData != nil {
+	if len(rows) < 2 || rows[1].UserData.Valid {
 		t.Fatalf("ordinary chat rows changed: %#v", rows)
 	}
 
@@ -834,10 +834,10 @@ func TestBtwSummaryReceiptSurvivesConcurrentFollowup(t *testing.T) {
 	for _, row := range rows {
 		byID[row.MessageID] = row
 	}
-	if byID[messageID].UserData == nil || *byID[messageID].UserData != `{"btw_turn_kind":"summary"}` {
+	if !byID[messageID].UserData.Valid || byID[messageID].UserData.String != `{"btw_turn_kind":"summary"}` {
 		t.Fatalf("summary receipt resolved to wrong row: %#v", byID[messageID])
 	}
-	if row := byID[followID]; row.LlmData == nil || !strings.Contains(*row.LlmData, "echo: followup") || row.UserData != nil {
+	if row := byID[followID]; !row.LlmData.Valid || !strings.Contains(row.LlmData.String, "echo: followup") || row.UserData.Valid {
 		t.Fatalf("followup receipt resolved to wrong row: %#v", row)
 	}
 }
@@ -896,11 +896,11 @@ func TestSubagentRunnerRejectsBtwReaderReuse(t *testing.T) {
 	held.waitCall(t, "echo: reader")
 	before := len(listMessages(t, database, reader.ConversationID))
 	row, err := database.GetConversationByID(t.Context(), reader.ConversationID)
-	if err != nil || row.Slug == nil {
+	if err != nil || !row.Slug.Valid {
 		t.Fatalf("reader row=%#v err=%v", row, err)
 	}
 	reusedID, _, err := (&db.SubagentDBAdapter{DB: database}).GetOrCreateSubagentConversation(
-		t.Context(), *row.Slug, parent.ConversationID, "",
+		t.Context(), row.Slug.String, parent.ConversationID, "",
 	)
 	if err != nil || reusedID != reader.ConversationID {
 		t.Fatalf("slug reuse id=%q want=%q err=%v", reusedID, reader.ConversationID, err)

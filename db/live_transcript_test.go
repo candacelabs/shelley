@@ -32,7 +32,7 @@ func TestLiveTranscriptMetadataDoesNotInterfere(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if row.LlmData != nil || !row.ExcludedFromContext || row.UserData == nil {
+		if row.LlmData.Valid || !row.ExcludedFromContext || !row.UserData.Valid {
 			t.Fatalf("metadata is not display-only: %+v", row)
 		}
 		return *row
@@ -81,7 +81,7 @@ func TestLiveTranscriptMetadataDoesNotInterfere(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, err := database.ListMessages(ctx, conv.ConversationID)
-	if err != nil || len(rows) != 4 || *rows[0].LlmData != *request.LlmData {
+	if err != nil || len(rows) != 4 || rows[0].LlmData.String != request.LlmData.String {
 		t.Fatalf("original request changed or all-row read filtered metadata: %+v, %v", rows, err)
 	}
 	for range 2 {

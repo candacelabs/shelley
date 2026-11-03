@@ -128,7 +128,7 @@ const videoUrl = computed<string | undefined>(() => {
       if (typeof d.url === "string") {
         return d.url;
       } else if (typeof d.path === "string") {
-        return `/api/read?path=${encodeURIComponent(d.path as string)}`;
+        return `api/read?path=${encodeURIComponent(d.path as string)}`;
       }
     }
   }

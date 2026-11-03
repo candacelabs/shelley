@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/guregu/null/v5"
+
 	"shelley.exe.dev/db/generated"
 )
 
@@ -153,33 +155,6 @@ func TestDB_Migrate_TracksByName(t *testing.T) {
 	}
 }
 
-// Default predates managed profiles: the upgrade marks it built-in and keeps
-// any customization, which also stops shipped updates for it.
-func TestDB_Migrate_MarksDefaultBuiltin(t *testing.T) {
-	for _, settings := range []string{`{}`, `{"model":"custom-default","system_prompt":"Keep my instructions"}`} {
-		t.Run(settings, func(t *testing.T) {
-			db := setupDBMigratedThrough(t, 44)
-			defer db.Close()
-			ctx := t.Context()
-			// Raw SQL: the current generated queries include columns not yet
-			// present in this pre-upgrade fixture.
-			if err := db.Pool().Tx(ctx, func(ctx context.Context, tx *Tx) error {
-				_, err := tx.Exec("UPDATE profiles SET settings = ? WHERE name = 'Default'", settings)
-				return err
-			}); err != nil {
-				t.Fatal(err)
-			}
-			if err := db.Migrate(ctx); err != nil {
-				t.Fatal(err)
-			}
-			after := listMigrationProfiles(t, db)
-			if p := after[0]; p.Name != "Default" || p.Settings != settings || !p.IsDefault || !p.Builtin || p.UserEdited != (settings != `{}`) {
-				t.Fatalf("upgrade marked Default wrong: %+v", p)
-			}
-		})
-	}
-}
-
 func TestDB_Migrate_KeepsEditedBuiltin(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
@@ -225,9 +200,9 @@ func TestDB_WithTx(t *testing.T) {
 	err := db.WithTx(ctx, func(q *generated.Queries) error {
 		_, err := q.CreateConversation(ctx, generated.CreateConversationParams{
 			ConversationID: "test-conv-1",
-			Slug:           stringPtr("test-slug"),
+			Slug:           null.StringFromPtr(stringPtr("test-slug")),
 			UserInitiated:  true,
-			Model:          nil,
+			Model:          null.String{},
 		})
 		return err
 	})
@@ -366,109 +341,13 @@ func TestMessagesTypeHasNoCheckConstraint(t *testing.T) {
 	assertMessagesTableHasNoCheck(t, db, ctx)
 }
 
-func TestDropMessageTypeCheckMigrationPreservesSearch(t *testing.T) {
-	// Run all migrations through HEAD. CreateConversation uses sqlc-generated
-	// INSERTs that reference columns added in later migrations, so we can't
-	// stop early. The test still verifies that migration 22 (and everything
-	// after) preserves the FTS triggers / indexes.
-	database := setupDBMigratedThrough(t, 1000)
-	defer database.Close()
-
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-
-	conv, err := database.CreateConversation(ctx, stringPtr("migration-fts"), true, nil, nil, ConversationOptions{})
-	if err != nil {
-		t.Fatalf("CreateConversation: %v", err)
-	}
-	userMsg, err := database.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeUser,
-		UserData:       map[string]any{"Content": []any{map[string]any{"Type": 2, "Text": "pelican before migration"}}},
-	})
-	if err != nil {
-		t.Fatalf("CreateMessage user: %v", err)
-	}
-	if _, err := database.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeTool,
-		UserData:       map[string]any{"Content": []any{map[string]any{"Type": 2, "Text": "tool noise should not be indexed"}}},
-	}); err != nil {
-		t.Fatalf("CreateMessage tool: %v", err)
-	}
-
-	assertMessagesTableHasNoCheck(t, database, ctx)
-	assertMessagesIndexesExist(
-		t, database, ctx,
-		"idx_messages_conversation_id",
-		"idx_messages_conversation_sequence",
-		"idx_messages_type",
-		"idx_messages_conversation_generation_context_sequence",
-	)
-	assertTriggersExist(t, database, ctx, "messages_fts_ai", "messages_fts_ad", "messages_fts_au")
-	assertSearchHits(t, database, ctx, "pelican", conv.ConversationID)
-	assertSearchMisses(t, database, ctx, "noise")
-
-	updated := `{"Content":[{"Type":2,"Text":"albatross after update"}]}`
-	if err := database.QueriesTx(ctx, func(q *generated.Queries) error {
-		return q.UpdateMessageUserData(ctx, generated.UpdateMessageUserDataParams{
-			MessageID: userMsg.MessageID,
-			UserData:  &updated,
-		})
-	}); err != nil {
-		t.Fatalf("UpdateMessageUserData: %v", err)
-	}
-	assertSearchMisses(t, database, ctx, "pelican")
-	assertSearchHits(t, database, ctx, "albatross", conv.ConversationID)
-
-	agentMsg, err := database.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeAgent,
-		LLMData:        map[string]any{"Content": []any{map[string]any{"Type": 2, "Text": "cormorant after insert"}}},
-	})
-	if err != nil {
-		t.Fatalf("CreateMessage agent after migration: %v", err)
-	}
-	assertSearchHits(t, database, ctx, "cormorant", conv.ConversationID)
-
-	if err := database.QueriesTx(ctx, func(q *generated.Queries) error {
-		return q.DeleteMessage(ctx, agentMsg.MessageID)
-	}); err != nil {
-		t.Fatalf("DeleteMessage: %v", err)
-	}
-	assertSearchMisses(t, database, ctx, "cormorant")
-}
-
-func setupDBMigratedThrough(t *testing.T, lastMigration int) *DB {
+// migratedTestDB is a test database with Shelley's whole schema: on
+// PostgreSQL there is one schema (postgres_schema.sql), not a migration
+// history to stop part way through.
+func migratedTestDB(t *testing.T) *DB {
 	t.Helper()
-
-	tmpDir := t.TempDir()
-	database, err := New(Config{DSN: tmpDir + "/test.db"})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-
-	entries, err := schemaFS.ReadDir("schema")
-	if err != nil {
-		database.Close()
-		t.Fatalf("read schema: %v", err)
-	}
-	for _, entry := range entries {
-		if entry.IsDir() || len(entry.Name()) < 3 {
-			continue
-		}
-		var migrationNumber int
-		if _, err := fmt.Sscanf(entry.Name()[:3], "%d", &migrationNumber); err != nil || migrationNumber > lastMigration {
-			continue
-		}
-		if err := database.runMigration(ctx, entry.Name(), migrationNumber); err != nil {
-			database.Close()
-			t.Fatalf("run migration %s: %v", entry.Name(), err)
-		}
-	}
+	database, cleanup := NewTestDB(t)
+	t.Cleanup(cleanup)
 	return database
 }
 
@@ -827,70 +706,5 @@ func TestCreateMessageFoldsAgentWorkingAndTimestamp(t *testing.T) {
 		MarkAgentDone:  true,
 	}); err == nil {
 		t.Fatalf("expected error when both MarkAgentStart and MarkAgentDone are set")
-	}
-}
-
-// Jobs already notified had exited; the rest stay running until watched.
-func TestBackgroundJobsExitedMigration(t *testing.T) {
-	database := setupDBMigratedThrough(t, 41)
-	defer database.Close()
-	ctx := t.Context()
-	// Raw SQL: generated queries assume the latest schema.
-	err := database.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
-		if _, err := tx.Exec(`INSERT INTO conversations (conversation_id, user_initiated) VALUES ('c', TRUE)`); err != nil {
-			return err
-		}
-		_, err := tx.Exec(`INSERT INTO background_jobs (job_id, conversation_id, tool_use_id, command, pid, process_start_time, log_path, exit_path, started_at, notified)
-			VALUES ('done', 'c', '', '', 0, 0, '', '', CURRENT_TIMESTAMP, TRUE), ('pending', 'c', '', '', 0, 0, '', '', CURRENT_TIMESTAMP, FALSE)`)
-		return err
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := database.Migrate(ctx); err != nil {
-		t.Fatal(err)
-	}
-	var running []generated.BackgroundJob
-	err = database.Queries(ctx, func(q *generated.Queries) error {
-		var err error
-		running, err = q.ListRunningBackgroundJobs(ctx, "c")
-		return err
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(running) != 1 || running[0].JobID != "pending" {
-		t.Fatalf("running jobs = %+v, want only pending", running)
-	}
-}
-
-// Conversations from before copy-on-write keep their settings.
-func TestDB_Migrate_MarksExistingConversationsEdited(t *testing.T) {
-	db := setupDBMigratedThrough(t, 45)
-	defer db.Close()
-	ctx := t.Context()
-	withProfile, err := db.CreateConversation(ctx, nil, true, nil, nil, ConversationOptions{Profile: "Default", ThinkingLevel: "high"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	without, err := db.CreateConversation(ctx, nil, true, nil, nil, ConversationOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Migrate(ctx); err != nil {
-		t.Fatal(err)
-	}
-	for _, tc := range []struct {
-		id     string
-		edited bool
-	}{{withProfile.ConversationID, true}, {without.ConversationID, false}} {
-		conv, err := db.GetConversationByID(ctx, tc.id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		opts := ParseConversationOptions(conv.ConversationOptions)
-		if opts.SettingsEdited != tc.edited || (tc.edited && opts.ThinkingLevel != "high") {
-			t.Fatalf("migrated options %s: %+v", conv.ConversationOptions, opts)
-		}
 	}
 }

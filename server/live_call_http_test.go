@@ -244,7 +244,7 @@ func TestLiveCallStartsADraft(t *testing.T) {
 		t.Fatal(err)
 	}
 	options := db.ParseConversationOptions(row.ConversationOptions)
-	if row.IsDraft || derefString(row.Cwd) != cwd || derefString(row.Model) != "predictable" || options.Profile != "Personal" || options.ToolOverrides["bash"] != "off" || options.ThinkingLevel != "high" {
+	if row.IsDraft || derefString(row.Cwd.Ptr()) != cwd || derefString(row.Model.Ptr()) != "predictable" || options.Profile != "Personal" || options.ToolOverrides["bash"] != "off" || options.ThinkingLevel != "high" {
 		t.Fatalf("first send settings: %+v options=%+v", row, options)
 	}
 
@@ -312,7 +312,7 @@ func TestLiveTranscriptLateCaptionStaysForNextHandoff(t *testing.T) {
 		t.Fatalf("late caption dispatched another task: %+v, %v", users, err)
 	}
 	var original llm.Message
-	if err := json.Unmarshal([]byte(*users[0].LlmData), &original); err != nil {
+	if err := json.Unmarshal([]byte(users[0].LlmData.String), &original); err != nil {
 		t.Fatal(err)
 	}
 	expectEqual(t, "original request is immutable", liveMessageText(original), message)
@@ -365,7 +365,7 @@ func TestLiveDeliveryIdentitySurvivesQueueDrainAsTypedUserWork(t *testing.T) {
 	manager.SetAgentWorking(false)
 	<-manager.drainPendingMessages(e.s)
 	rows, err := e.database.ListTypedUserMessages(t.Context(), conv.ConversationID)
-	if err != nil || len(rows) != 1 || liveDeliveryIDFromUserData([]byte(derefString(rows[0].UserData))) != deliveryID {
+	if err != nil || len(rows) != 1 || liveDeliveryIDFromUserData([]byte(derefString(rows[0].UserData.Ptr()))) != deliveryID {
 		t.Fatalf("saved typed delivery identity = %+v, %v", rows, err)
 	}
 	if _, ok, err := (userMessageFinder{db: e.database, conversationID: conv.ConversationID}).FindUserMessageBySequence(t.Context(), rows[0].SequenceID); err != nil || !ok {
@@ -392,7 +392,7 @@ func TestLiveDeliveryImmediateModelInputHasSequenceID(t *testing.T) {
 		t.Fatalf("stored user messages: %d, %v", len(rows), err)
 	}
 	var stored llm.Message
-	if err := json.Unmarshal([]byte(*rows[0].LlmData), &stored); err != nil {
+	if err := json.Unmarshal([]byte(rows[0].LlmData.String), &stored); err != nil {
 		t.Fatal(err)
 	}
 	if messageText(stored) != chat.Message {

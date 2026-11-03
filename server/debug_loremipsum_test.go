@@ -143,12 +143,12 @@ func TestGenerateLoremConversationTimestampsAreChronological(t *testing.T) {
 			}
 		}
 
-		if m.UsageData != nil {
+		if m.UsageData.Valid {
 			var usage struct {
 				StartTime *time.Time `json:"start_time"`
 				EndTime   *time.Time `json:"end_time"`
 			}
-			if err := json.Unmarshal([]byte(*m.UsageData), &usage); err != nil {
+			if err := json.Unmarshal([]byte(m.UsageData.String), &usage); err != nil {
 				t.Fatalf("message %s has invalid usage_data: %v", m.MessageID, err)
 			}
 			if usage.StartTime != nil {
@@ -159,7 +159,7 @@ func TestGenerateLoremConversationTimestampsAreChronological(t *testing.T) {
 			}
 		}
 
-		if m.LlmData == nil {
+		if !m.LlmData.Valid {
 			continue
 		}
 		var parsed struct {
@@ -168,7 +168,7 @@ func TestGenerateLoremConversationTimestampsAreChronological(t *testing.T) {
 				ToolUseEndTime   *time.Time `json:"ToolUseEndTime"`
 			} `json:"Content"`
 		}
-		if err := json.Unmarshal([]byte(*m.LlmData), &parsed); err != nil {
+		if err := json.Unmarshal([]byte(m.LlmData.String), &parsed); err != nil {
 			t.Fatalf("message %s has invalid llm_data: %v", m.MessageID, err)
 		}
 		for _, c := range parsed.Content {

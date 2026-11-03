@@ -906,11 +906,11 @@ echo '{"slug": "Hello World!"}'`
 	if err != nil {
 		t.Fatalf("GetConversation: %v", err)
 	}
-	if conv.Slug == nil {
+	if !conv.Slug.Valid {
 		t.Fatalf("slug not set on conversation")
 	}
-	if *conv.Slug != "hello-world" {
-		t.Errorf("slug = %q, want %q", *conv.Slug, "hello-world")
+	if conv.Slug.String != "hello-world" {
+		t.Errorf("slug = %q, want %q", conv.Slug.String, "hello-world")
 	}
 }
 
@@ -1301,11 +1301,11 @@ func TestSystemPromptListsExeDevIntegrations(t *testing.T) {
 			t.Fatal(err)
 		}
 		msgs := listMessages(t, e.database, child.ConversationID)
-		if len(msgs) == 0 || msgs[0].Type != string(db.MessageTypeSystem) || msgs[0].LlmData == nil {
+		if len(msgs) == 0 || msgs[0].Type != string(db.MessageTypeSystem) || !msgs[0].LlmData.Valid {
 			t.Fatalf("subagent has no system prompt: %+v", msgs)
 		}
 		var system llm.Message
-		if err := json.Unmarshal([]byte(*msgs[0].LlmData), &system); err != nil {
+		if err := json.Unmarshal([]byte(msgs[0].LlmData.String), &system); err != nil {
 			t.Fatal(err)
 		}
 		out["subagent"] = system.Content[0].Text

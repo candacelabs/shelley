@@ -13,7 +13,7 @@ import { getOrCreateWorkerPoolSingleton, type WorkerPoolManager } from "@pierre/
 // Workers run shiki/TextMate tokenization off the main thread so large
 // conversations (hundreds of diffs) don't freeze the UI while highlighting.
 export const diffsPoolOptions = {
-  workerFactory: () => new Worker("/diffs-worker.js"),
+  workerFactory: () => new Worker("diffs-worker.js"),
 };
 
 // Languages to eagerly preload in the highlighter so the common cases render

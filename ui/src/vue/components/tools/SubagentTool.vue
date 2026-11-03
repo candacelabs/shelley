@@ -15,7 +15,7 @@
      strip opens the subagent conversation.
 
      Subagent navigation: the React original navigates client-side by pushing
-     `/c/{slug}` onto window.history and dispatching a popstate event (no parent
+     `c/{slug}` onto window.history and dispatching a popstate event (no parent
      callback prop). This port replicates that behavior verbatim in onLinkClick;
      it does not introduce a new prop or emit. -->
 <template>
@@ -61,7 +61,7 @@
       <div v-if="displayData?.conversation_id" class="tool-section">
         <div class="tool-label">Conversation:</div>
         <div class="tool-code">
-          <a :href="`/c/${liveSlug}`" class="subagent-link" @click="onLinkClick">
+          <a :href="`c/${liveSlug}`" class="subagent-link" @click="onLinkClick">
             View subagent conversation →
           </a>
         </div>

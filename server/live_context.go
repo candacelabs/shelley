@@ -90,10 +90,10 @@ func (s *Server) liveSituation(conversation *generated.Conversation) string {
 		state = "working"
 	}
 	situation := "Backend state: " + state + "."
-	if cwd := derefString(conversation.Cwd); cwd != "" {
+	if cwd := derefString(conversation.Cwd.Ptr()); cwd != "" {
 		situation += " Working directory: " + truncateRunes(cwd, 300) + "."
 	}
-	model := derefString(conversation.Model)
+	model := derefString(conversation.Model.Ptr())
 	if model == "" {
 		model = s.effectiveDefaultModel(s.getModelList())
 	}

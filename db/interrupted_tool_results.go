@@ -18,7 +18,7 @@ func (db *DB) RecordInterruptedToolResults(ctx context.Context, conversationID s
 	if err != nil {
 		return nil, err
 	}
-	if !conversation.TurnInterrupted || conversation.ParentConversationID != nil {
+	if !conversation.TurnInterrupted || conversation.ParentConversationID.Valid {
 		return nil, nil
 	}
 	var result *generated.Message
@@ -28,7 +28,7 @@ func (db *DB) RecordInterruptedToolResults(ctx context.Context, conversationID s
 		if err != nil {
 			return err
 		}
-		if !conversation.TurnInterrupted || conversation.ParentConversationID != nil {
+		if !conversation.TurnInterrupted || conversation.ParentConversationID.Valid {
 			return nil
 		}
 		messages, err := q.ListMessagesForContext(ctx, conversationID)
@@ -38,11 +38,11 @@ func (db *DB) RecordInterruptedToolResults(ctx context.Context, conversationID s
 		pending := make(map[string]bool)
 		var ids []string
 		for _, message := range messages {
-			if (message.Type != string(MessageTypeAgent) && message.Type != string(MessageTypeUser)) || message.LlmData == nil {
+			if (message.Type != string(MessageTypeAgent) && message.Type != string(MessageTypeUser)) || !message.LlmData.Valid {
 				continue
 			}
 			var data llm.Message
-			if json.Unmarshal([]byte(*message.LlmData), &data) != nil {
+			if json.Unmarshal([]byte(message.LlmData.String), &data) != nil {
 				continue
 			}
 			for _, content := range data.Content {

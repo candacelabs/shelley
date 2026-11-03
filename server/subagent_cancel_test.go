@@ -55,11 +55,11 @@ func hasCancelledEndOfTurn(t *testing.T, database *db.DB, conversationID string)
 		t.Fatalf("list messages: %v", err)
 	}
 	for _, msg := range messages {
-		if msg.LlmData == nil {
+		if !msg.LlmData.Valid {
 			continue
 		}
 		var llmMsg llm.Message
-		if err := json.Unmarshal([]byte(*msg.LlmData), &llmMsg); err != nil {
+		if err := json.Unmarshal([]byte(msg.LlmData.String), &llmMsg); err != nil {
 			continue
 		}
 		if !llmMsg.EndOfTurn {

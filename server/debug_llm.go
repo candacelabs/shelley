@@ -24,8 +24,8 @@ func (s *Server) handleDebugLLMList(w http.ResponseWriter, r *http.Request) {
 		slug, ok := slugs[e.ConversationID]
 		if !ok {
 			// Not found just means no slug, e.g. a deleted conversation.
-			if c, err := s.db.GetConversationByID(r.Context(), e.ConversationID); err == nil && c.Slug != nil {
-				slug = *c.Slug
+			if c, err := s.db.GetConversationByID(r.Context(), e.ConversationID); err == nil && c.Slug.Valid {
+				slug = c.Slug.String
 			}
 			slugs[e.ConversationID] = slug
 		}

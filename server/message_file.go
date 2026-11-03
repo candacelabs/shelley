@@ -191,12 +191,12 @@ func (s *Server) messageFileRequest(w http.ResponseWriter, r *http.Request) (req
 		http.Error(w, "message not found", http.StatusNotFound)
 		return "", nil, "", false
 	}
-	if msg.LlmData == nil {
+	if !msg.LlmData.Valid {
 		http.Error(w, "message has no llm_data", http.StatusNotFound)
 		return "", nil, "", false
 	}
 	m = new(llm.Message)
-	if err := json.Unmarshal([]byte(*msg.LlmData), m); err != nil {
+	if err := json.Unmarshal([]byte(msg.LlmData.String), m); err != nil {
 		http.Error(w, "failed to parse message data", http.StatusInternalServerError)
 		return "", nil, "", false
 	}
@@ -241,8 +241,8 @@ func (s *Server) openLocalFile(w http.ResponseWriter, r *http.Request, conversat
 // empty result as "deny".
 func (s *Server) conversationCwd(r *http.Request, conversationID string) string {
 	conv, err := s.db.GetConversationByID(r.Context(), conversationID)
-	if err == nil && conv != nil && conv.Cwd != nil && *conv.Cwd != "" {
-		return *conv.Cwd
+	if err == nil && conv != nil && conv.Cwd.Valid && conv.Cwd.String != "" {
+		return conv.Cwd.String
 	}
 	return ""
 }

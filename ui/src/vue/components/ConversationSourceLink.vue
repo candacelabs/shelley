@@ -3,7 +3,7 @@
      stable conversation ID. -->
 <template>
   <a
-    :href="`/c/${encodeURIComponent(source.conversationId)}`"
+    :href="`c/${encodeURIComponent(source.conversationId)}`"
     :title="
       source.relationship === 'parent' ? 'Open parent conversation' : 'Open subagent conversation'
     "

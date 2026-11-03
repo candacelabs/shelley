@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/guregu/null/v5"
 	"strings"
 
 	"shelley.exe.dev/db/generated"
@@ -24,13 +25,13 @@ type BtwReaderIdentity struct {
 // managed BTW reader. Callers must not key behavior off Kind alone.
 func ManagedBtwReaderIdentity(conversation generated.Conversation) (BtwReaderIdentity, bool) {
 	options := ParseConversationOptions(conversation.ConversationOptions)
-	if conversation.ParentConversationID == nil || conversation.UserInitiated ||
+	if !conversation.ParentConversationID.Valid || conversation.UserInitiated ||
 		options.Kind != BtwReaderKind || options.ParentPointer == nil || !options.ParentPointer.valid() {
 		return BtwReaderIdentity{}, false
 	}
 	return BtwReaderIdentity{
 		ConversationID:       conversation.ConversationID,
-		ParentConversationID: *conversation.ParentConversationID,
+		ParentConversationID: conversation.ParentConversationID.String,
 		ParentPointer:        *options.ParentPointer,
 	}, true
 }
@@ -98,7 +99,7 @@ func (db *DB) CreateBtwReaderConversation(ctx context.Context, params CreateBtwR
 	err = db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
 		q := generated.New(tx.Conn())
 		conversation, err = q.CreateSubagentConversation(ctx, generated.CreateSubagentConversationParams{
-			ConversationID: conversationID, Slug: &slug, Cwd: params.Cwd, ParentConversationID: &params.ParentID,
+			ConversationID: conversationID, Slug: null.StringFrom(slug), Cwd: null.StringFromPtr(params.Cwd), ParentConversationID: null.StringFrom(params.ParentID),
 		})
 		if err != nil {
 			return err
@@ -110,7 +111,7 @@ func (db *DB) CreateBtwReaderConversation(ctx context.Context, params CreateBtwR
 		}
 		if params.Model != nil && *params.Model != "" {
 			if err := q.UpdateConversationModel(ctx, generated.UpdateConversationModelParams{
-				ConversationID: conversationID, Model: params.Model,
+				ConversationID: conversationID, Model: null.StringFromPtr(params.Model),
 			}); err != nil {
 				return err
 			}
@@ -145,10 +146,10 @@ func (db *DB) GetBtwParentSnapshot(ctx context.Context, parentID string) (genera
 			return err
 		}
 		pointer.Generation = parent.CurrentGeneration
-		return rx.QueryRow(
-			"SELECT COALESCE(MAX(sequence_id), 0) FROM messages WHERE conversation_id = ? AND generation = ?",
-			parentID, pointer.Generation,
-		).Scan(&pointer.SequenceID)
+		pointer.SequenceID, err = generated.New(rx.Conn()).GetMaxSequenceIDForGeneration(ctx, generated.GetMaxSequenceIDForGenerationParams{
+			ConversationID: parentID, Generation: pointer.Generation,
+		})
+		return err
 	})
 	return parent, pointer, err
 }
@@ -157,7 +158,7 @@ func (db *DB) GetBtwParentSnapshot(ctx context.Context, parentID string) (genera
 func (db *DB) ListBtwReaders(ctx context.Context, parentID string) ([]BtwReaderIdentity, error) {
 	readers := make([]BtwReaderIdentity, 0)
 	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
-		children, err := generated.New(rx.Conn()).GetSubagents(ctx, &parentID)
+		children, err := generated.New(rx.Conn()).GetSubagents(ctx, null.StringFrom(parentID))
 		if err != nil {
 			return err
 		}
@@ -205,7 +206,7 @@ func (db *DB) ListFrozenParentMessages(ctx context.Context, conversationID strin
 				created_at, display_data, excluded_from_context, generation, llm_api_url, model_name,
 				forked_from_message_id, user_email, other_usage_data, external_message_id
 			FROM messages
-			WHERE conversation_id = ? AND generation = ? AND sequence_id <= ? AND excluded_from_context = FALSE
+			WHERE conversation_id = $1 AND generation = $2 AND sequence_id <= $3 AND excluded_from_context = FALSE
 			ORDER BY sequence_id ASC`,
 			conversationID, pointer.Generation, pointer.SequenceID,
 		)
@@ -254,7 +255,7 @@ func loadBtwDeletionChildren(ctx context.Context, q *generated.Queries, conversa
 	} else if err != nil {
 		return btwDeletionChildren{}, false, err
 	}
-	children, err := q.GetSubagents(ctx, &conversationID)
+	children, err := q.GetSubagents(ctx, null.StringFrom(conversationID))
 	if err != nil {
 		return btwDeletionChildren{}, false, err
 	}

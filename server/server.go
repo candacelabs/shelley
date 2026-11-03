@@ -173,7 +173,7 @@ func toAPIMessages(messages []generated.Message) []APIMessage {
 		// (see llmDataForAPI). On big conversations this loop runs over every
 		// message in the history, so parsing the JSON once instead of once
 		// per concern (image stripping + end-of-turn) is a meaningful saving.
-		llmData, endOfTurnPtr := llmDataForAPI(msg.LlmData, msg.Type, msg.MessageID)
+		llmData, endOfTurnPtr := llmDataForAPI(msg.LlmData.Ptr(), msg.Type, msg.MessageID)
 
 		apiMsg := APIMessage{
 			MessageID:           msg.MessageID,
@@ -181,17 +181,17 @@ func toAPIMessages(messages []generated.Message) []APIMessage {
 			SequenceID:          msg.SequenceID,
 			Type:                msg.Type,
 			LlmData:             llmData,
-			UserData:            msg.UserData,
-			UsageData:           msg.UsageData,
-			OtherUsageData:      msg.OtherUsageData,
+			UserData:            msg.UserData.Ptr(),
+			UsageData:           msg.UsageData.Ptr(),
+			OtherUsageData:      msg.OtherUsageData.Ptr(),
 			CreatedAt:           msg.CreatedAt,
-			DisplayData:         msg.DisplayData,
+			DisplayData:         msg.DisplayData.Ptr(),
 			Generation:          msg.Generation,
 			EndOfTurn:           endOfTurnPtr,
-			LLMAPIURL:           msg.LlmApiUrl,
-			ModelName:           msg.ModelName,
-			ForkedFromMessageID: msg.ForkedFromMessageID,
-			UserEmail:           msg.UserEmail,
+			LLMAPIURL:           msg.LlmApiUrl.Ptr(),
+			ModelName:           msg.ModelName.Ptr(),
+			ForkedFromMessageID: msg.ForkedFromMessageID.Ptr(),
+			UserEmail:           msg.UserEmail.Ptr(),
 		}
 		apiMessages[i] = apiMsg
 	}
@@ -309,10 +309,10 @@ func isAgentEndOfTurn(msg *generated.Message) bool {
 	if msg.Type != string(db.MessageTypeAgent) && msg.Type != string(db.MessageTypeError) {
 		return false
 	}
-	if msg.LlmData == nil {
+	if !msg.LlmData.Valid {
 		return false
 	}
-	endOfTurn, ok := extractEndOfTurn(*msg.LlmData)
+	endOfTurn, ok := extractEndOfTurn(msg.LlmData.String)
 	if !ok {
 		return false
 	}
@@ -323,11 +323,11 @@ func isAgentEndOfTurn(msg *generated.Message) bool {
 // Returns 0 if the message has no usage data (e.g., user messages), in which case
 // the client should keep its previous context window value.
 func calculateContextWindowSizeFromMsg(msg *generated.Message) uint64 {
-	if msg == nil || msg.UsageData == nil {
+	if msg == nil || !msg.UsageData.Valid {
 		return 0
 	}
 	var usage llm.Usage
-	if err := json.Unmarshal([]byte(*msg.UsageData), &usage); err != nil {
+	if err := json.Unmarshal([]byte(msg.UsageData.String), &usage); err != nil {
 		return 0
 	}
 	return usage.ContextWindowUsed()
@@ -335,6 +335,10 @@ func calculateContextWindowSizeFromMsg(msg *generated.Message) uint64 {
 
 // Server manages the HTTP API and active conversations
 type Server struct {
+	// stop is closed by Shutdown; stopInit makes it, stopOnce closes it once.
+	stop                chan struct{}
+	stopInit            sync.Once
+	stopOnce            sync.Once
 	modelProviders      *modelproviders.Manager
 	db                  *db.DB
 	llmManager          LLMProvider
@@ -413,6 +417,12 @@ type Server struct {
 	// the UI. Useful for marking demo instances so they're not confused
 	// with the primary Shelley. Set by `serve --banner`.
 	Banner string
+
+	// publicBase is where this server is reached from outside, path included
+	// (csf serve: its -origin plus /shelley), as its embedder states it. The
+	// server never guesses it: conversation links and the page's <base> come
+	// from it, and with none set a notification carries no link.
+	publicBase *url.URL
 
 	// SocketActivated records that the listener came from systemd socket
 	// activation. After an upgrade, such a server exits and lets systemd
@@ -1097,7 +1107,7 @@ func (s *Server) getOrCreateConversationManager(ctx context.Context, conversatio
 		manager.recordDrainedQueued = func(ctx context.Context, qm db.QueuedMessage, messages []llm.Message) (int64, error) {
 			return s.recordDrainedQueuedMessages(ctx, conversationID, qm, messages)
 		}
-		if role == roleTopLevel && conversation.ExternalEndpoint != nil {
+		if role == roleTopLevel && conversation.ExternalEndpoint.Valid {
 			manager.userChat = channelChat{s: s, conversationID: conversationID}
 		}
 		manager.userEmail = userEmail
@@ -1499,10 +1509,10 @@ func (s *Server) getMessageType(message llm.Message) (db.MessageType, error) {
 // convertToLLMMessage converts a database message to an LLM message
 func convertToLLMMessage(msg generated.Message) (llm.Message, error) {
 	var llmMsg llm.Message
-	if msg.LlmData == nil {
+	if !msg.LlmData.Valid {
 		return llm.Message{}, fmt.Errorf("message has no LLM data")
 	}
-	if err := json.Unmarshal([]byte(*msg.LlmData), &llmMsg); err != nil {
+	if err := json.Unmarshal([]byte(msg.LlmData.String), &llmMsg); err != nil {
 		return llm.Message{}, fmt.Errorf("failed to unmarshal LLM data: %w", err)
 	}
 	return llmMsg, nil
@@ -1578,16 +1588,6 @@ func (s *Server) notifyConversationListChanged() {
 }
 
 // publicHostname returns the server's public hostname.
-func publicHostname() string {
-	if h, err := os.Hostname(); err == nil {
-		if !strings.Contains(h, ".") {
-			return h + ".exe.xyz"
-		}
-		return h
-	}
-	return "localhost"
-}
-
 // conversationURL returns the full URL for a conversation, using slug if available.
 func (s *Server) conversationURL(slug string) string {
 	if slug == "" {
@@ -1596,13 +1596,39 @@ func (s *Server) conversationURL(slug string) string {
 	return s.publicURL("/c/" + slug)
 }
 
-// publicURL returns the absolute URL of path on the server's public address.
+// SetPublicBase states where this server is reached from outside, path
+// included; its links and its page's <base> follow it.
+func (s *Server) SetPublicBase(base *url.URL) { s.publicBase = base }
+
+// publicURL is path on the server's public base, or "" when none is set.
 func (s *Server) publicURL(path string) string {
-	hostname := publicHostname()
-	if s.listenPort == 443 || s.listenPort == 0 {
-		return fmt.Sprintf("https://%s%s", hostname, path)
+	if s.publicBase == nil {
+		return ""
 	}
-	return fmt.Sprintf("https://%s:%d%s", hostname, s.listenPort, path)
+	return s.publicBase.JoinPath(path).String()
+}
+
+// publicHost is the public base's host, or "" when none is set.
+func (s *Server) publicHost() string {
+	if s.publicBase == nil {
+		return ""
+	}
+	return s.publicBase.Hostname()
+}
+
+// basePath is the path the server is mounted at, ending in "/": the page's
+// <base href>, so its assets and API calls resolve under the mount.
+func (s *Server) basePath() string {
+	if s.publicBase == nil {
+		return "/"
+	}
+	// url.JoinPath on an origin leaves its path without the leading "/", and
+	// a relative <base> would resolve against the page's own path.
+	mount := strings.Trim(s.publicBase.Path, "/")
+	if mount == "" {
+		return "/"
+	}
+	return "/" + mount + "/"
 }
 
 // hasActiveDelegatedWork reports whether conversationID has a running
@@ -1643,7 +1669,7 @@ func (s *Server) publishConversationState(state ConversationState) {
 		// with disable_notifications suppress all end-of-turn notifications
 		// (push, email, discord, ntfy) and hooks, same as subagents. So do
 		// channel conversations, which the user follows in the chat.
-		notifyDisabled := convErr == nil && (db.ParseConversationOptions(conv.ConversationOptions).DisableNotifications || conv.ExternalConversationID != nil)
+		notifyDisabled := convErr == nil && (db.ParseConversationOptions(conv.ConversationOptions).DisableNotifications || conv.ExternalConversationID.Valid)
 		suppressNotify := isSubagent || notifyDisabled
 		if !suppressNotify {
 			// Work still running for this conversation will wake it again when
@@ -1677,16 +1703,16 @@ func (s *Server) publishConversationState(state ConversationState) {
 		}
 
 		var slug string
-		if convErr == nil && conv.Slug != nil {
-			slug = *conv.Slug
+		if convErr == nil && conv.Slug.Valid {
+			slug = conv.Slug.String
 		}
-		hostname := publicHostname()
+		hostname := s.publicHost()
 		payload := notifications.AgentDonePayload{
 			Hostname:          hostname,
 			Model:             state.Model,
 			ConversationTitle: slug,
 			ConversationURL:   s.conversationURL(slug),
-			VMName:            strings.TrimSuffix(hostname, ".exe.xyz"),
+			VMName:            strings.SplitN(hostname, ".", 2)[0],
 		}
 		// The literal latest agent message is often a tool-only turn (e.g.
 		// agent ended on `git status`), which produces a useless "Agent
@@ -1865,6 +1891,19 @@ func (s *Server) tcpHandler(mux http.Handler) http.Handler {
 // also on a Unix socket. The TCP listener gets full middleware (CSRF, requireHeader, logger).
 // The Unix socket listener gets only the logger middleware (no CSRF, no requireHeader)
 // since it is local and trusted.
+// Shutdown asks a server started with StartWithListeners to shut down as it
+// does on SIGTERM, for a server embedded in a process that owns its own
+// signals (csf's converse). StartWithListeners returns once it has.
+func (s *Server) Shutdown() {
+	s.stopOnce.Do(func() { close(s.stopRequested()) })
+}
+
+// stopRequested is the channel Shutdown closes.
+func (s *Server) stopRequested() chan struct{} {
+	s.stopInit.Do(func() { s.stop = make(chan struct{}) })
+	return s.stop
+}
+
 func (s *Server) StartWithListeners(tcpListener net.Listener, socketPath string) error {
 	if err := s.initResourceMonitors(context.Background()); err != nil {
 		return err
@@ -1995,6 +2034,8 @@ func (s *Server) StartWithListeners(tcpListener net.Listener, socketPath string)
 		return err
 	case <-quit:
 		s.logger.Info("Shutting down server")
+	case <-s.stopRequested():
+		s.logger.Info("Shutting down server on request")
 	}
 
 	// Signal background routines to stop

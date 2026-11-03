@@ -376,7 +376,7 @@ async function toggleScope(t: EphemeralTerminal) {
   }
   scopePending.value = new Set(scopePending.value).add(t.id);
   try {
-    const res = await fetch(`/api/terminals/${encodeURIComponent(t.termId)}/scope`, {
+    const res = await fetch(`api/terminals/${encodeURIComponent(t.termId)}/scope`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ conversation_id: next }),

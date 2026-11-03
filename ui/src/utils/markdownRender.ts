@@ -15,8 +15,10 @@ const MAX_DATA_URI_LENGTH = 2_000_000;
 
 // Prefixes of the per-message endpoints that serve local images and file
 // downloads. Mirror the routes registered in server/server.go.
-const FILE_ENDPOINT_RE = /^\/api\/message\/[^/]+\/file\?path=/;
-const DOWNLOAD_ENDPOINT_RE = /^\/api\/message\/[^/]+\/download\?path=/;
+// Relative, as fileEndpointURL builds them: they resolve under the page's
+// <base>, so Shelley served under a prefix still reaches its own endpoint.
+const FILE_ENDPOINT_RE = /^api\/message\/[^/]+\/file\?path=/;
+const DOWNLOAD_ENDPOINT_RE = /^api\/message\/[^/]+\/download\?path=/;
 
 // Links like [name](sandbox:/path/to/file) download that file. The scheme is
 // ChatGPT's convention for files in its sandbox, and models use it unprompted.
@@ -45,13 +47,13 @@ export function classifyImageSrc(src: string): ImageKind {
 // fileEndpointURL builds the same-origin URL that serves a local image
 // referenced by a specific message.
 export function fileEndpointURL(messageId: string, path: string): string {
-  return `/api/message/${encodeURIComponent(messageId)}/file?path=${encodeURIComponent(path)}`;
+  return `api/message/${encodeURIComponent(messageId)}/file?path=${encodeURIComponent(path)}`;
 }
 
 // fileDownloadURL builds the same-origin URL that downloads a local file
 // linked by a specific message.
 function fileDownloadURL(messageId: string, path: string): string {
-  return `/api/message/${encodeURIComponent(messageId)}/download?path=${encodeURIComponent(path)}`;
+  return `api/message/${encodeURIComponent(messageId)}/download?path=${encodeURIComponent(path)}`;
 }
 
 // buildMarked returns a Marked instance that rewrites local-path image tokens
@@ -103,7 +105,8 @@ function setLinkTarget(node: Element): void {
     node.setAttribute("title", "Open supporting message");
   }
 
-  if (node.getAttribute("href")?.startsWith("/c/")) node.removeAttribute("target");
+  const href = node.getAttribute("href");
+  if (href?.startsWith("c/") || href?.startsWith("/c/")) node.removeAttribute("target");
   else node.setAttribute("target", "_blank");
   node.setAttribute("rel", "noopener noreferrer");
 }

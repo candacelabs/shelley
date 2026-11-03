@@ -68,7 +68,7 @@ func TestForkConversationCopiesUpToCutoff(t *testing.T) {
 	if forked.ConversationID == sourceID {
 		t.Fatal("forked conversation should have a new id")
 	}
-	if forked.ParentConversationID != nil {
+	if forked.ParentConversationID.Valid {
 		t.Fatal("forked conversation should be top-level (no parent)")
 	}
 	if forked.Tags != source.Tags {
@@ -96,16 +96,16 @@ func TestForkConversationCopiesUpToCutoff(t *testing.T) {
 	// de-duplicated (forked copies carry identical usage values and would
 	// otherwise double-count). Source messages have no provenance.
 	for i, c := range copied {
-		if c.ForkedFromMessageID == nil {
+		if !c.ForkedFromMessageID.Valid {
 			t.Fatalf("copied message %d should record forked_from_message_id", i)
 		}
-		if *c.ForkedFromMessageID != msgs[i].MessageID {
-			t.Fatalf("copied message %d forked_from = %q, want %q", i, *c.ForkedFromMessageID, msgs[i].MessageID)
+		if c.ForkedFromMessageID.String != msgs[i].MessageID {
+			t.Fatalf("copied message %d forked_from = %q, want %q", i, c.ForkedFromMessageID.String, msgs[i].MessageID)
 		}
 	}
 	for i, m := range srcMsgs {
-		if m.ForkedFromMessageID != nil {
-			t.Fatalf("source message %d should have nil forked_from_message_id, got %q", i, *m.ForkedFromMessageID)
+		if m.ForkedFromMessageID.Valid {
+			t.Fatalf("source message %d should have nil forked_from_message_id, got %q", i, m.ForkedFromMessageID.String)
 		}
 	}
 }
@@ -138,7 +138,7 @@ func TestHandleForkConversationByMessageID(t *testing.T) {
 	if forked.ConversationID == sourceID || forked.ConversationID == "" {
 		t.Fatalf("unexpected forked id %q", forked.ConversationID)
 	}
-	if forked.Slug == nil || *forked.Slug == "" {
+	if !forked.Slug.Valid || forked.Slug.String == "" {
 		t.Fatal("forked conversation should have a slug")
 	}
 	if forked.Tags != source.Tags {
@@ -276,8 +276,8 @@ func TestForkConversationAtOlderGenerationMessage(t *testing.T) {
 		if m.Generation != 1 {
 			t.Fatalf("copied message %d generation = %d, want 1", i, m.Generation)
 		}
-		if *m.ForkedFromMessageID != gen1Msgs[i].MessageID {
-			t.Fatalf("copied message %d forked_from = %q, want %q", i, *m.ForkedFromMessageID, gen1Msgs[i].MessageID)
+		if m.ForkedFromMessageID.String != gen1Msgs[i].MessageID {
+			t.Fatalf("copied message %d forked_from = %q, want %q", i, m.ForkedFromMessageID.String, gen1Msgs[i].MessageID)
 		}
 	}
 }

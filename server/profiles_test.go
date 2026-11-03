@@ -82,7 +82,7 @@ func (e *profileEnv) waitTurn(id string, before int) {
 	waitFor(e.t, 10*time.Second, func() bool {
 		msgs := listMessages(e.t, e.database, id)
 		last := msgs[len(msgs)-1]
-		return len(msgs) > before && last.Type == string(db.MessageTypeAgent) && last.LlmData != nil && strings.Contains(*last.LlmData, `"EndOfTurn":true`)
+		return len(msgs) > before && last.Type == string(db.MessageTypeAgent) && last.LlmData.Valid && strings.Contains(last.LlmData.String, `"EndOfTurn":true`)
 	})
 }
 
@@ -311,7 +311,7 @@ func TestRestoreBuiltinProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opts := db.ParseConversationOptions(before.ConversationOptions); opts.Profile != "Default" || opts.SystemPrompt != "Custom chat prompt." || opts.ToolOverrides["bash"] != "off" || *before.Model != "model-b" {
+	if opts := db.ParseConversationOptions(before.ConversationOptions); opts.Profile != "Default" || opts.SystemPrompt != "Custom chat prompt." || opts.ToolOverrides["bash"] != "off" || before.Model.String != "model-b" {
 		t.Fatalf("conversation didn't copy edited profile: %+v", before)
 	}
 	var restored Profile
@@ -328,7 +328,7 @@ func TestRestoreBuiltinProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.ConversationOptions != before.ConversationOptions || *after.Model != *before.Model {
+	if after.ConversationOptions != before.ConversationOptions || after.Model.String != before.Model.String {
 		t.Fatalf("restore changed existing chat: before %+v, after %+v", before, after)
 	}
 	// Restoring an already-current profile is safe too.
@@ -371,8 +371,8 @@ func TestConversationSwitchesProfiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opts := db.ParseConversationOptions(conv.ConversationOptions); *conv.Model != "model-b" || opts.Profile != "Terse" || opts.ToolOverrides["bash"] != "off" {
-		t.Fatalf("new conversation: model %s, options %+v", *conv.Model, opts)
+	if opts := db.ParseConversationOptions(conv.ConversationOptions); conv.Model.String != "model-b" || opts.Profile != "Terse" || opts.ToolOverrides["bash"] != "off" {
+		t.Fatalf("new conversation: model %s, options %+v", conv.Model.String, opts)
 	}
 	req := e.lastTurnRequest()
 	if got := strings.TrimSpace(systemText(req)); got != "Be terse in "+cwd+"." || hasTool(req, "bash") {
@@ -395,7 +395,7 @@ func TestConversationSwitchesProfiles(t *testing.T) {
 	}
 	marker := lastModelChange(listMessages(t, e.database, id))
 	var ud ModelChangeUserData
-	if err := json.Unmarshal([]byte(*marker.UserData), &ud); err != nil {
+	if err := json.Unmarshal([]byte(marker.UserData.String), &ud); err != nil {
 		t.Fatal(err)
 	}
 	if ud.ProfileTo != "Default" || ud.To != "" || !ud.SystemPromptChanged || len(ud.ToolsOn) != 1 || ud.ToolsOn[0] != "bash" {
@@ -416,8 +416,8 @@ func TestConversationSwitchesProfiles(t *testing.T) {
 		t.Fatalf("after switching: system %q, bash %v", got, hasTool(req, "bash"))
 	}
 	conv, _ = e.database.GetConversationByID(t.Context(), id)
-	if opts := db.ParseConversationOptions(conv.ConversationOptions); *conv.Model != "model-b" || opts.Profile != "Default" || opts.SystemPrompt != "" || len(opts.ToolOverrides) != 0 {
-		t.Fatalf("after switching: model %s, options %+v", *conv.Model, opts)
+	if opts := db.ParseConversationOptions(conv.ConversationOptions); conv.Model.String != "model-b" || opts.Profile != "Default" || opts.SystemPrompt != "" || len(opts.ToolOverrides) != 0 {
+		t.Fatalf("after switching: model %s, options %+v", conv.Model.String, opts)
 	}
 
 	// Changing nothing records nothing.
@@ -431,12 +431,12 @@ func TestConversationSwitchesProfiles(t *testing.T) {
 	e.want(201, "POST", "/api/profiles", `{"name":"Same","model":"model-b"}`)
 	e.want(200, "POST", "/api/conversation/"+id+"/settings", `{"profile":"Same"}`)
 	msgs := listMessages(t, e.database, id)
-	if len(msgs) != n+1 || !strings.Contains(*msgs[n].UserData, `"text":"Profile changed to Same."`) {
-		t.Fatalf("relabeling added %d messages, last %s", len(msgs)-n, *msgs[len(msgs)-1].UserData)
+	if len(msgs) != n+1 || !strings.Contains(msgs[n].UserData.String, `"text":"Profile changed to Same."`) {
+		t.Fatalf("relabeling added %d messages, last %s", len(msgs)-n, msgs[len(msgs)-1].UserData.String)
 	}
 	e.want(200, "POST", "/api/conversation/"+id+"/settings", `{"model":"model-a","thinking_level":"high"}`)
-	if ud := lastModelChange(listMessages(t, e.database, id)); !strings.Contains(*ud.UserData, `"text":"Model changed from Model B to Model A; reasoning changed from model's default to high."`) {
-		t.Fatalf("marker: %s", *ud.UserData)
+	if ud := lastModelChange(listMessages(t, e.database, id)); !strings.Contains(ud.UserData.String, `"text":"Model changed from Model B to Model A; reasoning changed from model's default to high."`) {
+		t.Fatalf("marker: %s", ud.UserData.String)
 	}
 
 	// A fork from before the switch goes back to Terse's settings.
@@ -758,11 +758,11 @@ func TestConversationFollowsProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.TrimSpace(systemText(req)); got != "Version two." || hasTool(req, "bash") || *conv.Model != "model-b" {
-		t.Fatalf("shared conversation didn't follow: system %q, bash %v, model %s", got, hasTool(req, "bash"), *conv.Model)
+	if got := strings.TrimSpace(systemText(req)); got != "Version two." || hasTool(req, "bash") || conv.Model.String != "model-b" {
+		t.Fatalf("shared conversation didn't follow: system %q, bash %v, model %s", got, hasTool(req, "bash"), conv.Model.String)
 	}
 	marker := lastModelChange(listMessages(t, e.database, shared))
-	if marker == nil || !strings.Contains(*marker.UserData, "system prompt changed") {
+	if marker == nil || !strings.Contains(marker.UserData.String, "system prompt changed") {
 		t.Fatal("following recorded no marker")
 	}
 	if got := strings.TrimSpace(systemText(turn(own))); got != "Version one." {

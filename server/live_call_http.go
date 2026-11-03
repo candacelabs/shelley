@@ -144,7 +144,7 @@ func (s *Server) watchLiveCall(c *liveCall, seq int64) {
 			}
 			heard = append(heard, liveRow{
 				seq: row.SequenceID, user: user, text: text, full: full,
-				liveDeliveryID: liveDeliveryIDFromUserData([]byte(derefString(row.UserData))),
+				liveDeliveryID: liveDeliveryIDFromUserData([]byte(derefString(row.UserData.Ptr()))),
 			})
 		}
 		c.observe(heard)

@@ -10,7 +10,7 @@ export function writeFileInOrder(path: string, content: string): Promise<Respons
   unsavedContents.set(path, unsaved);
   const previous = pendingWrites.get(path);
   const write = (previous ? previous.catch(() => undefined) : Promise.resolve()).then(async () => {
-    const response = await fetch("/api/write-file", {
+    const response = await fetch("api/write-file", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path, content }),

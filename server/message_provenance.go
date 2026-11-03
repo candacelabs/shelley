@@ -96,16 +96,16 @@ func (s *Server) senderUserData(ctx context.Context, target generated.Conversati
 
 	var relationship senderRelationship
 	switch {
-	case isManagedChild(sender) && sender.ParentConversationID != nil && *sender.ParentConversationID == target.ConversationID:
+	case isManagedChild(sender) && sender.ParentConversationID.Valid && sender.ParentConversationID.String == target.ConversationID:
 		relationship = senderRelationshipSubagent
-	case isManagedChild(target) && target.ParentConversationID != nil && *target.ParentConversationID == senderConversationID:
+	case isManagedChild(target) && target.ParentConversationID.Valid && target.ParentConversationID.String == senderConversationID:
 		relationship = senderRelationshipParent
 	default:
 		return nil, nil
 	}
 	return &senderMessageUserData{
 		SenderConversationID: senderConversationID,
-		SenderSlug:           derefString(sender.Slug),
+		SenderSlug:           derefString(sender.Slug.Ptr()),
 		SenderRelationship:   relationship,
 	}, nil
 }

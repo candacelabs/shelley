@@ -123,7 +123,7 @@ func TestCompactDebugEndToEnd(t *testing.T) {
 	endTurns := func() int {
 		n := 0
 		for _, m := range listMessages(t, database, id) {
-			if m.Type == string(db.MessageTypeAgent) && m.LlmData != nil && strings.Contains(*m.LlmData, `"EndOfTurn":true`) {
+			if m.Type == string(db.MessageTypeAgent) && m.LlmData.Valid && strings.Contains(m.LlmData.String, `"EndOfTurn":true`) {
 				n++
 			}
 		}
@@ -148,7 +148,7 @@ func TestCompactDebugEndToEnd(t *testing.T) {
 	seqOf := func(typ db.MessageType, contains string) int64 {
 		t.Helper()
 		for _, m := range listMessages(t, database, id) {
-			if m.Type == string(typ) && m.LlmData != nil && strings.Contains(*m.LlmData, contains) {
+			if m.Type == string(typ) && m.LlmData.Valid && strings.Contains(m.LlmData.String, contains) {
 				return m.SequenceID
 			}
 		}
@@ -174,7 +174,7 @@ func TestCompactDebugEndToEnd(t *testing.T) {
 	for _, m := range listMessages(t, database, id) {
 		if m.Type == string(db.MessageTypeInPlaceCompaction) {
 			var c db.InPlaceCompaction
-			if err := json.Unmarshal([]byte(*m.UserData), &c); err != nil {
+			if err := json.Unmarshal([]byte(m.UserData.String), &c); err != nil {
 				t.Fatal(err)
 			}
 			records = append(records, c)
@@ -191,7 +191,7 @@ func TestCompactDebugEndToEnd(t *testing.T) {
 		t.Fatalf("no listing warning: %v", err)
 	}
 	var listingData struct{ Text string }
-	if err := json.Unmarshal([]byte(*warnings[len(warnings)-1].UserData), &listingData); err != nil {
+	if err := json.Unmarshal([]byte(warnings[len(warnings)-1].UserData.String), &listingData); err != nil {
 		t.Fatal(err)
 	}
 	listing := listingData.Text
@@ -226,7 +226,7 @@ func TestCompactDebugEndToEnd(t *testing.T) {
 			original = m
 		}
 	}
-	if !strings.Contains(*original.LlmData, "compact-me-please\\n") {
+	if !strings.Contains(original.LlmData.String, "compact-me-please\\n") {
 		t.Fatal("tool result row was modified")
 	}
 }

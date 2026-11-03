@@ -261,7 +261,7 @@ for (const markdown of [
 // Local-image rewriting is keyed by messageId, independent of caching.
 const withId = renderMarkdownToSafeHTML("![alt](out/plot.png)", "msg-1");
 assert(
-  withId.includes("/api/message/msg-1/file?path=out%2Fplot.png"),
+  withId.includes("api/message/msg-1/file?path=out%2Fplot.png"),
   "local image rewritten to per-message file endpoint",
 );
 const withoutId = renderMarkdownToSafeHTML("![alt](out/plot.png)");
@@ -274,7 +274,7 @@ assert(!withoutId.includes("<img"), "local image dropped with no messageId to au
   root.innerHTML = renderMarkdownToSafeHTML("[get it](<sandbox:/tmp/out/a b.mp4>)", "msg-1");
   const a = root.querySelector("a");
   assert(
-    a?.getAttribute("href") === "/api/message/msg-1/download?path=%2Ftmp%2Fout%2Fa%20b.mp4" &&
+    a?.getAttribute("href") === "api/message/msg-1/download?path=%2Ftmp%2Fout%2Fa%20b.mp4" &&
       a?.getAttribute("download") === "" &&
       !a?.hasAttribute("target") &&
       a?.textContent === "get it",
@@ -411,11 +411,11 @@ assert(
   const rA = renderMarkdownToSafeHTML(img, "msg-A", { owner: ownerA, runKey: "0" });
   const rB = renderMarkdownToSafeHTML(img, "msg-B", { owner: ownerB, runKey: "0" });
   assert(
-    rA.includes("/api/message/msg-A/file") && !rA.includes("msg-B"),
+    rA.includes("api/message/msg-A/file") && !rA.includes("msg-B"),
     "owner A's cached render points at message A's file endpoint",
   );
   assert(
-    rB.includes("/api/message/msg-B/file") && !rB.includes("msg-A"),
+    rB.includes("api/message/msg-B/file") && !rB.includes("msg-A"),
     "owner B's cached render points at message B's file endpoint (not A's, stale)",
   );
 

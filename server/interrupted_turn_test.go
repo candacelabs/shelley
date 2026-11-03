@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/guregu/null/v5"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -163,7 +164,7 @@ func TestResumeInterruptedToolPersistsResult(t *testing.T) {
 	if err := database.QueriesTx(ctx, func(q *generated.Queries) error {
 		_, err := q.CreateMessage(ctx, generated.CreateMessageParams{
 			MessageID: "corrupt", ConversationID: conversationID, SequenceID: 900,
-			Generation: 1, Type: string(db.MessageTypeAgent), LlmData: &corrupt,
+			Generation: 1, Type: string(db.MessageTypeAgent), LlmData: null.StringFrom(corrupt),
 		})
 		return err
 	}); err != nil {
@@ -181,14 +182,14 @@ func TestResumeInterruptedToolPersistsResult(t *testing.T) {
 	}
 	var count int
 	for _, message := range messages {
-		if message.UserData == nil || !strings.Contains(*message.UserData, `"interrupted_tool_result":true`) {
+		if !message.UserData.Valid || !strings.Contains(message.UserData.String, `"interrupted_tool_result":true`) {
 			continue
 		}
-		if message.LlmData == nil {
+		if !message.LlmData.Valid {
 			t.Fatal("interrupted result has no LLM data")
 		}
 		var result llm.Message
-		if err := json.Unmarshal([]byte(*message.LlmData), &result); err != nil {
+		if err := json.Unmarshal([]byte(message.LlmData.String), &result); err != nil {
 			t.Fatal(err)
 		}
 		if len(result.Content) != 1 || result.Content[0].ToolUseID != "toolu_interrupted" ||
@@ -212,7 +213,7 @@ func TestResumeInterruptedToolPersistsResult(t *testing.T) {
 	}
 	var afterCount int
 	for _, message := range after {
-		if message.UserData != nil && strings.Contains(*message.UserData, `"interrupted_tool_result":true`) {
+		if message.UserData.Valid && strings.Contains(message.UserData.String, `"interrupted_tool_result":true`) {
 			afterCount++
 		}
 	}
@@ -262,7 +263,7 @@ func TestSendAfterInterruptedToolPersistsResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, message := range messages {
-		if message.UserData != nil && strings.Contains(*message.UserData, `"interrupted_tool_result":true`) {
+		if message.UserData.Valid && strings.Contains(message.UserData.String, `"interrupted_tool_result":true`) {
 			return
 		}
 	}
@@ -329,7 +330,7 @@ func TestInterruptedToolResultStreamed(t *testing.T) {
 			}
 			var result *generated.Message
 			for _, message := range listMessages(t, database, convID) {
-				if message.UserData != nil && strings.Contains(*message.UserData, `"interrupted_tool_result":true`) {
+				if message.UserData.Valid && strings.Contains(message.UserData.String, `"interrupted_tool_result":true`) {
 					result = &message
 				}
 			}

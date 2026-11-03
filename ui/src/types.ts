@@ -247,6 +247,8 @@ export interface Link {
 
 // InitData is injected into window by the server
 export interface InitData {
+  // The path Shelley is mounted at, ending in "/" (utils/basePath.ts).
+  base_path?: string;
   models: Model[];
   default_model: string;
   default_cwd?: string;

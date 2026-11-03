@@ -179,7 +179,7 @@ export interface BtwSummaryReceipt {
 }
 
 class ApiService {
-  private baseUrl = "/api";
+  private baseUrl = "api";
 
   private postHeaders = {
     "Content-Type": "application/json",
@@ -1117,7 +1117,7 @@ class ApiService {
 
   // Version check APIs
   async checkVersion(forceRefresh = false): Promise<VersionInfo> {
-    const url = forceRefresh ? "/version-check?refresh=true" : "/version-check";
+    const url = forceRefresh ? "version-check?refresh=true" : "version-check";
     const response = await fetch(url);
     if (!response.ok) {
       throw await responseError(response, "Failed to check version");
@@ -1127,7 +1127,7 @@ class ApiService {
 
   async getChangelog(currentTag: string, latestTag: string): Promise<CommitInfo[]> {
     const params = new URLSearchParams({ current: currentTag, latest: latestTag });
-    const response = await fetch(`/version-changelog?${params}`);
+    const response = await fetch(`version-changelog?${params}`);
     if (!response.ok) {
       throw await responseError(response, "Failed to get changelog");
     }
@@ -1135,7 +1135,7 @@ class ApiService {
   }
 
   async upgrade(restart: boolean = false): Promise<{ status: string; message: string }> {
-    const url = restart ? "/upgrade?restart=true" : "/upgrade";
+    const url = restart ? "upgrade?restart=true" : "upgrade";
     const response = await fetch(url, {
       method: "POST",
       headers: { "X-Shelley-Request": "1" },
@@ -1153,7 +1153,7 @@ class ApiService {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), 5000);
     try {
-      const response = await fetch("/version", { signal: ctl.signal });
+      const response = await fetch("version", { signal: ctl.signal });
       if (!response.ok) {
         throw await responseError(response, "Failed to get version");
       }
@@ -1164,7 +1164,7 @@ class ApiService {
   }
 
   async upgradeHeadlessShell(): Promise<{ status: string; message: string; version: string }> {
-    const response = await fetch("/upgrade-headless-shell", {
+    const response = await fetch("upgrade-headless-shell", {
       method: "POST",
       headers: { "X-Shelley-Request": "1" },
     });
@@ -1176,7 +1176,7 @@ class ApiService {
   }
 
   async exit(): Promise<{ status: string; message: string }> {
-    const response = await fetch("/exit", {
+    const response = await fetch("exit", {
       method: "POST",
     });
     if (!response.ok) {
@@ -1186,7 +1186,7 @@ class ApiService {
   }
 
   async getSettings(): Promise<Record<string, string>> {
-    const response = await fetch("/settings");
+    const response = await fetch("settings");
     if (!response.ok) {
       throw await responseError(response, "Failed to get settings");
     }
@@ -1194,7 +1194,7 @@ class ApiService {
   }
 
   async setSetting(key: string, value: string): Promise<{ status: string }> {
-    const response = await fetch("/settings", {
+    const response = await fetch("settings", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1210,7 +1210,7 @@ class ApiService {
   }
 
   async dismissResourceNotice(kind: ResourceKind, episodeId: number): Promise<ResourceStatus> {
-    const response = await fetch(`/api/resources/${kind}/dismiss`, {
+    const response = await fetch(`api/resources/${kind}/dismiss`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1240,12 +1240,12 @@ export interface FeatureFlag {
 
 export const featureFlagsApi = {
   async list(): Promise<FeatureFlag[]> {
-    const r = await fetch("/feature-flags");
+    const r = await fetch("feature-flags");
     if (!r.ok) throw await responseError(r, "Failed to load feature flags");
     return r.json();
   },
   async set(name: string, value: unknown): Promise<void> {
-    const r = await fetch("/feature-flags", {
+    const r = await fetch("feature-flags", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Shelley-Request": "1" },
       body: JSON.stringify({ name, value }),
@@ -1253,7 +1253,7 @@ export const featureFlagsApi = {
     if (!r.ok) throw new Error((await r.text()) || r.statusText);
   },
   async clear(name: string): Promise<void> {
-    const r = await fetch("/feature-flags", {
+    const r = await fetch("feature-flags", {
       method: "DELETE",
       headers: { "Content-Type": "application/json", "X-Shelley-Request": "1" },
       body: JSON.stringify({ name }),
@@ -1272,12 +1272,12 @@ export interface FaviconEmoji {
 
 export const faviconEmojiApi = {
   async get(): Promise<FaviconEmoji> {
-    const r = await fetch("/api/favicon-emoji");
+    const r = await fetch("api/favicon-emoji");
     if (!r.ok) throw await responseError(r, "Failed to load favicon emoji");
     return r.json();
   },
   async set(emoji: string): Promise<FaviconEmoji> {
-    const r = await fetch("/api/favicon-emoji", {
+    const r = await fetch("api/favicon-emoji", {
       method: "PUT",
       headers: { "Content-Type": "application/json", "X-Shelley-Request": "1" },
       body: JSON.stringify({ emoji }),
@@ -1310,7 +1310,7 @@ export const modelCostsApi = {
   ): Promise<Record<string, ModelCostDTO | null>> {
     const missing = models.filter((m) => !modelCostCache.has(m.model));
     if (missing.length > 0) {
-      const r = await fetch("/api/model-costs", {
+      const r = await fetch("api/model-costs", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Shelley-Request": "1" },
         body: JSON.stringify({ models: missing }),
@@ -1357,7 +1357,7 @@ export interface SubagentUsageDTO {
 
 export const subagentUsageApi = {
   async get(conversationId: string, signal?: AbortSignal): Promise<SubagentUsageDTO> {
-    const r = await fetch(`/api/conversation/${conversationId}/subagent-usage`, {
+    const r = await fetch(`api/conversation/${conversationId}/subagent-usage`, {
       headers: { "X-Shelley-Request": "1" },
       signal,
     });
@@ -1413,7 +1413,7 @@ export interface TestCustomModelRequest {
 }
 
 class CustomModelsApi {
-  private baseUrl = "/api";
+  private baseUrl = "api";
 
   private postHeaders = {
     "Content-Type": "application/json",
@@ -1513,8 +1513,8 @@ export interface ModelProviderConnection {
 export const modelProvidersApi = {
   async check(input: ModelProviderInput, id?: string): Promise<{ id: string; name?: string }[]> {
     const path = id
-      ? `/api/model-providers/${encodeURIComponent(id)}/check`
-      : "/api/model-providers/check";
+      ? `api/model-providers/${encodeURIComponent(id)}/check`
+      : "api/model-providers/check";
     const response = await fetch(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1525,13 +1525,13 @@ export const modelProvidersApi = {
   },
 
   async list(): Promise<ModelProviderConnection[]> {
-    const response = await fetch("/api/model-providers");
+    const response = await fetch("api/model-providers");
     if (!response.ok) throw await responseError(response, "Failed to load providers");
     return response.json();
   },
 
   async create(input: ModelProviderInput): Promise<ModelProviderConnection> {
-    const response = await fetch("/api/model-providers", {
+    const response = await fetch("api/model-providers", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
@@ -1541,7 +1541,7 @@ export const modelProvidersApi = {
   },
 
   async update(id: string, input: ModelProviderInput): Promise<ModelProviderConnection> {
-    const response = await fetch(`/api/model-providers/${encodeURIComponent(id)}`, {
+    const response = await fetch(`api/model-providers/${encodeURIComponent(id)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
@@ -1551,7 +1551,7 @@ export const modelProvidersApi = {
   },
 
   async refresh(id: string): Promise<ModelProviderConnection> {
-    const response = await fetch(`/api/model-providers/${encodeURIComponent(id)}/refresh`, {
+    const response = await fetch(`api/model-providers/${encodeURIComponent(id)}/refresh`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
     });
@@ -1560,7 +1560,7 @@ export const modelProvidersApi = {
   },
 
   async remove(id: string): Promise<void> {
-    const response = await fetch(`/api/model-providers/${encodeURIComponent(id)}`, {
+    const response = await fetch(`api/model-providers/${encodeURIComponent(id)}`, {
       method: "DELETE",
     });
     if (!response.ok) throw await responseError(response, "Failed to remove provider");
@@ -1590,7 +1590,7 @@ export interface McpTool {
 }
 
 async function mcpFetch(path: string, failure: string, init?: RequestInit): Promise<Response> {
-  const response = await fetch(`/api/mcp/servers${path}`, init);
+  const response = await fetch(`api/mcp/servers${path}`, init);
   if (!response.ok) throw await responseError(response, failure);
   return response;
 }
@@ -1621,7 +1621,7 @@ export const mcpServersApi = {
 };
 
 async function profilesFetch(path: string, failure: string, init?: RequestInit) {
-  const response = await fetch(`/api${path}`, init);
+  const response = await fetch(`api${path}`, init);
   if (!response.ok) throw await responseError(response, failure);
   return response;
 }
@@ -1741,7 +1741,7 @@ export interface ChannelTypeInfo {
 }
 
 class NotificationChannelsApi {
-  private baseUrl = "/api";
+  private baseUrl = "api";
 
   private postHeaders = {
     "Content-Type": "application/json",

@@ -239,11 +239,11 @@ func liveMessageText(message llm.Message) string {
 // background jobs and other machine notices, progress and errors are not
 // dialogue (text ""). full is the row's whole visible text.
 func liveDialogue(row generated.Message) (user bool, text, full string, err error) {
-	if row.LlmData == nil || (row.Type != "user" && row.Type != "agent") {
+	if !row.LlmData.Valid || (row.Type != "user" && row.Type != "agent") {
 		return false, "", "", nil
 	}
 	var message llm.Message
-	if err := json.Unmarshal([]byte(*row.LlmData), &message); err != nil {
+	if err := json.Unmarshal([]byte(row.LlmData.String), &message); err != nil {
 		return false, "", "", fmt.Errorf("decode message %s: %w", row.MessageID, err)
 	}
 	full = liveMessageText(message)
@@ -253,7 +253,7 @@ func liveDialogue(row generated.Message) (user bool, text, full string, err erro
 		}
 		return false, full, full, nil
 	}
-	if !typedUserForLLM(message, []byte(derefString(row.UserData))) {
+	if !typedUserForLLM(message, []byte(derefString(row.UserData.Ptr()))) {
 		return true, "", full, nil
 	}
 	// The exchange stays visible in chat and in the backend's request, but

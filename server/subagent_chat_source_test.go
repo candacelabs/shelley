@@ -49,11 +49,11 @@ func userMessageContaining(t *testing.T, database *db.DB, conversationID, text s
 		t.Fatalf("list messages: %v", err)
 	}
 	for i := range messages {
-		if messages[i].Type != string(db.MessageTypeUser) || messages[i].LlmData == nil {
+		if messages[i].Type != string(db.MessageTypeUser) || !messages[i].LlmData.Valid {
 			continue
 		}
 		var message llm.Message
-		if err := json.Unmarshal([]byte(*messages[i].LlmData), &message); err != nil {
+		if err := json.Unmarshal([]byte(messages[i].LlmData.String), &message); err != nil {
 			continue
 		}
 		if strings.Contains(messageText(message), text) {
@@ -65,11 +65,11 @@ func userMessageContaining(t *testing.T, database *db.DB, conversationID, text s
 
 func storedLLMMessage(t *testing.T, message *generated.Message) llm.Message {
 	t.Helper()
-	if message == nil || message.LlmData == nil {
+	if message == nil || !message.LlmData.Valid {
 		t.Fatal("message llm_data is nil")
 	}
 	var decoded llm.Message
-	if err := json.Unmarshal([]byte(*message.LlmData), &decoded); err != nil {
+	if err := json.Unmarshal([]byte(message.LlmData.String), &decoded); err != nil {
 		t.Fatalf("decode llm_data: %v", err)
 	}
 	return decoded
@@ -80,10 +80,10 @@ func storedUserData(t *testing.T, message *generated.Message) []byte {
 	if message == nil {
 		t.Fatal("message not found")
 	}
-	if message.UserData == nil {
+	if !message.UserData.Valid {
 		t.Fatal("message user_data is nil")
 	}
-	return []byte(*message.UserData)
+	return []byte(message.UserData.String)
 }
 
 func senderChatRequest(t *testing.T, targetID string, request ChatRequest, trusted bool) *http.Request {
@@ -294,7 +294,7 @@ func TestUntrustedSenderIDDoesNotReachModelOrStorage(t *testing.T) {
 		t.Fatalf("untrusted request reached model with provenance: %#v", call.request.Messages)
 	}
 	message := userMessageContaining(t, database, parent.ConversationID, rawText)
-	if message == nil || message.UserData != nil {
+	if message == nil || message.UserData.Valid {
 		t.Fatalf("untrusted request stored provenance: %#v", message)
 	}
 	releaseAndWaitIdle(t, server, parent.ConversationID, call)
@@ -534,7 +534,7 @@ func TestTranscriptionSenderProvenanceAppliesOnlyToFinalUserMessage(t *testing.T
 	var auditRows, finalRows int
 	for i := range rows {
 		row := &rows[i]
-		if row.LlmData == nil {
+		if !row.LlmData.Valid {
 			continue
 		}
 		message := storedLLMMessage(t, row)
@@ -545,7 +545,7 @@ func TestTranscriptionSenderProvenanceAppliesOnlyToFinalUserMessage(t *testing.T
 		switch {
 		case isAudit:
 			auditRows++
-			if row.UserData != nil || row.UserEmail != nil {
+			if row.UserData.Valid || row.UserEmail.Valid {
 				t.Fatalf("audit row has sender attribution: %#v", row)
 			}
 		case messageText(message) == finalText:
@@ -554,7 +554,7 @@ func TestTranscriptionSenderProvenanceAppliesOnlyToFinalUserMessage(t *testing.T
 				t.Fatalf("stored transcript = %q, want raw %q", got, finalText)
 			}
 			assertSenderSource(t, storedUserData(t, row), child.ConversationID, "backend", "subagent", finalText)
-			if row.UserEmail == nil || *row.UserEmail != "sender@example.com" {
+			if !row.UserEmail.Valid || row.UserEmail.String != "sender@example.com" {
 				t.Fatalf("transcript user email = %v", row.UserEmail)
 			}
 		}

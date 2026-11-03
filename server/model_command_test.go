@@ -214,16 +214,16 @@ func TestModelCommandSwitchesAwayFromUnavailablePersistedModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get conversation: %v", err)
 	}
-	if updated.Model == nil || *updated.Model != "model-b" {
+	if !updated.Model.Valid || updated.Model.String != "model-b" {
 		t.Fatalf("expected model-b persisted after /model, got %v", updated.Model)
 	}
 
 	marker := lastModelChange(listMessages(t, database, id))
-	if marker == nil || marker.UserData == nil {
+	if marker == nil || !marker.UserData.Valid {
 		t.Fatal("expected modelchange marker")
 	}
 	var change ModelChangeUserData
-	if err := json.Unmarshal([]byte(*marker.UserData), &change); err != nil {
+	if err := json.Unmarshal([]byte(marker.UserData.String), &change); err != nil {
 		t.Fatalf("decode modelchange marker: %v", err)
 	}
 	if change.From != removedModel || change.To != "model-b" {
@@ -265,7 +265,7 @@ func TestModelSwitchSticksAgainstStaleRequestModel(t *testing.T) {
 	if w := postChatModel(t, srv, id, "/model model-b", "model-a"); w.Code != http.StatusAccepted {
 		t.Fatalf("chat /model: expected 202, got %d: %s", w.Code, w.Body.String())
 	}
-	if updated, _ := database.GetConversationByID(ctx, id); updated.Model == nil || *updated.Model != "model-b" {
+	if updated, _ := database.GetConversationByID(ctx, id); !updated.Model.Valid || updated.Model.String != "model-b" {
 		t.Fatalf("expected model-b persisted after /model, got %v", updated.Model)
 	}
 
@@ -278,7 +278,7 @@ func TestModelSwitchSticksAgainstStaleRequestModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get conversation: %v", err)
 	}
-	if updated.Model == nil || *updated.Model != "model-b" {
+	if !updated.Model.Valid || updated.Model.String != "model-b" {
 		t.Fatalf("stale req.Model reverted the switch: got %v, want model-b", updated.Model)
 	}
 	// And the in-memory loop that actually talks to the LLM must run model-b,
@@ -339,7 +339,7 @@ func TestModelCommandSwitch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get conversation: %v", err)
 	}
-	if updated.Model == nil || *updated.Model != "model-b" {
+	if !updated.Model.Valid || updated.Model.String != "model-b" {
 		t.Fatalf("expected model-b persisted, got %v", updated.Model)
 	}
 
@@ -350,10 +350,10 @@ func TestModelCommandSwitch(t *testing.T) {
 		t.Fatalf("expected a modelchange marker message")
 	}
 	var ud ModelChangeUserData
-	if mc.UserData == nil {
+	if !mc.UserData.Valid {
 		t.Fatalf("modelchange marker has no user_data")
 	}
-	if err := json.Unmarshal([]byte(*mc.UserData), &ud); err != nil {
+	if err := json.Unmarshal([]byte(mc.UserData.String), &ud); err != nil {
 		t.Fatalf("unmarshal modelchange user_data: %v", err)
 	}
 	if ud.From != "model-a" || ud.To != "model-b" {
@@ -408,7 +408,7 @@ func TestModelCommandSwitchMidTurn(t *testing.T) {
 		return err == nil && !c.AgentWorking
 	})
 	updated, _ := database.GetConversationByID(ctx, id)
-	if updated.Model == nil || *updated.Model != "model-b" {
+	if !updated.Model.Valid || updated.Model.String != "model-b" {
 		t.Fatalf("expected model-b persisted, got %v", updated.Model)
 	}
 
@@ -454,7 +454,7 @@ func TestModelCommandReasoningOnly(t *testing.T) {
 		t.Fatalf("expected reasoning=high persisted, got %q", r)
 	}
 	updated, _ := database.GetConversationByID(ctx, id)
-	if updated.Model == nil || *updated.Model != "model-a" {
+	if !updated.Model.Valid || updated.Model.String != "model-a" {
 		t.Fatalf("reasoning-only change must not touch the model, got %v", updated.Model)
 	}
 
@@ -464,7 +464,7 @@ func TestModelCommandReasoningOnly(t *testing.T) {
 		t.Fatalf("expected a modelchange marker")
 	}
 	var ud ModelChangeUserData
-	json.Unmarshal([]byte(*mc.UserData), &ud)
+	json.Unmarshal([]byte(mc.UserData.String), &ud)
 	if ud.To != "" {
 		t.Fatalf("reasoning-only change must not record a model switch, got To=%q", ud.To)
 	}
@@ -511,7 +511,7 @@ func TestModelCommandModelAndReasoning(t *testing.T) {
 	}
 
 	updated, _ := database.GetConversationByID(ctx, id)
-	if updated.Model == nil || *updated.Model != "model-b" {
+	if !updated.Model.Valid || updated.Model.String != "model-b" {
 		t.Fatalf("expected model-b, got %v", updated.Model)
 	}
 	if r := getConvReasoning(t, database, id); r != "low" {
@@ -523,7 +523,7 @@ func TestModelCommandModelAndReasoning(t *testing.T) {
 		t.Fatalf("expected a modelchange marker")
 	}
 	var ud ModelChangeUserData
-	json.Unmarshal([]byte(*mc.UserData), &ud)
+	json.Unmarshal([]byte(mc.UserData.String), &ud)
 	if ud.From != "model-a" || ud.To != "model-b" {
 		t.Fatalf("expected model-a->model-b, got %q->%q", ud.From, ud.To)
 	}
@@ -553,12 +553,12 @@ func TestModelCommandBareLevelSwitch(t *testing.T) {
 		t.Fatalf("expected reasoning=medium, got %q", r)
 	}
 	updated, _ := database.GetConversationByID(ctx, id)
-	if updated.Model == nil || *updated.Model != "model-a" {
+	if !updated.Model.Valid || updated.Model.String != "model-a" {
 		t.Fatalf("bare level must not change the model, got %v", updated.Model)
 	}
 	mc := lastModelChange(listMessages(t, database, id))
 	var ud ModelChangeUserData
-	json.Unmarshal([]byte(*mc.UserData), &ud)
+	json.Unmarshal([]byte(mc.UserData.String), &ud)
 	if ud.ReasoningFrom != "high" || ud.ReasoningTo != "medium" {
 		t.Fatalf("expected reasoning high->medium, got %q->%q", ud.ReasoningFrom, ud.ReasoningTo)
 	}
@@ -583,7 +583,7 @@ func TestModelCommandDefaultRejected(t *testing.T) {
 	}
 	// Model unchanged.
 	updated, _ := database.GetConversationByID(ctx, id)
-	if updated.Model == nil || *updated.Model != "model-b" {
+	if !updated.Model.Valid || updated.Model.String != "model-b" {
 		t.Fatalf("/model default must not change the model, got %v", updated.Model)
 	}
 	// The reply explains the token is unknown.
@@ -592,7 +592,7 @@ func TestModelCommandDefaultRejected(t *testing.T) {
 		t.Fatalf("expected an informational marker")
 	}
 	var ud ModelChangeUserData
-	json.Unmarshal([]byte(*mc.UserData), &ud)
+	json.Unmarshal([]byte(mc.UserData.String), &ud)
 	if !strings.Contains(ud.Text, "Unknown") {
 		t.Fatalf("expected unknown-option message, got %q", ud.Text)
 	}
@@ -628,7 +628,7 @@ func TestModelCommandAmbiguous(t *testing.T) {
 	}
 	// Nothing changed: still model-a, no reasoning set.
 	updated, _ := database.GetConversationByID(ctx, id)
-	if updated.Model == nil || *updated.Model != "model-a" {
+	if !updated.Model.Valid || updated.Model.String != "model-a" {
 		t.Fatalf("ambiguous command must not change the model, got %v", updated.Model)
 	}
 	if r := getConvReasoning(t, database, id); r != "" {
@@ -640,7 +640,7 @@ func TestModelCommandAmbiguous(t *testing.T) {
 		t.Fatalf("expected an informational marker")
 	}
 	var ud ModelChangeUserData
-	json.Unmarshal([]byte(*mc.UserData), &ud)
+	json.Unmarshal([]byte(mc.UserData.String), &ud)
 	if !strings.Contains(ud.Text, "Ambiguous") {
 		t.Fatalf("expected ambiguity message, got %q", ud.Text)
 	}
@@ -671,7 +671,7 @@ func TestModelCommandBareShowsStatus(t *testing.T) {
 		t.Fatalf("expected a modelchange info marker")
 	}
 	var ud ModelChangeUserData
-	json.Unmarshal([]byte(*mc.UserData), &ud)
+	json.Unmarshal([]byte(mc.UserData.String), &ud)
 	if ud.From != "" || ud.To != "" {
 		t.Fatalf("bare /model must not record a switch, got from=%q to=%q", ud.From, ud.To)
 	}
@@ -681,7 +681,7 @@ func TestModelCommandBareShowsStatus(t *testing.T) {
 
 	// Model unchanged.
 	updated, _ := database.GetConversationByID(ctx, id)
-	if updated.Model == nil || *updated.Model != "model-a" {
+	if !updated.Model.Valid || updated.Model.String != "model-a" {
 		t.Fatalf("bare /model must not change the model, got %v", updated.Model)
 	}
 }
@@ -711,13 +711,13 @@ func TestModelCommandUnknownModel(t *testing.T) {
 		t.Fatalf("expected an info marker for unknown model")
 	}
 	var ud ModelChangeUserData
-	json.Unmarshal([]byte(*mc.UserData), &ud)
+	json.Unmarshal([]byte(mc.UserData.String), &ud)
 	if !strings.Contains(ud.Text, "does-not-exist") {
 		t.Fatalf("expected error to mention the bad model, got: %q", ud.Text)
 	}
 
 	updated, _ := database.GetConversationByID(ctx, id)
-	if updated.Model == nil || *updated.Model != "model-a" {
+	if !updated.Model.Valid || updated.Model.String != "model-a" {
 		t.Fatalf("unknown /model must not change the model, got %v", updated.Model)
 	}
 }
@@ -775,7 +775,7 @@ func TestForkUsesModelStateAtCutoff(t *testing.T) {
 	if w := postChat(t, srv, id, "/model model-b high"); w.Code != http.StatusAccepted {
 		t.Fatalf("chat /model: %d %s", w.Code, w.Body.String())
 	}
-	if updated, _ := database.GetConversationByID(ctx, id); updated.Model == nil || *updated.Model != "model-b" {
+	if updated, _ := database.GetConversationByID(ctx, id); !updated.Model.Valid || updated.Model.String != "model-b" {
 		t.Fatalf("source should now be model-b, got %v", updated.Model)
 	}
 
@@ -786,7 +786,7 @@ func TestForkUsesModelStateAtCutoff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get fork: %v", err)
 	}
-	if fork.Model == nil || *fork.Model != "model-a" {
+	if !fork.Model.Valid || fork.Model.String != "model-a" {
 		t.Fatalf("fork model = %v, want model-a (state at cutoff)", fork.Model)
 	}
 	if r := getConvReasoning(t, database, forkID); r != "" {
@@ -825,7 +825,7 @@ func TestForkWithoutModelSwitchKeepsModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get fork: %v", err)
 	}
-	if fork.Model == nil || *fork.Model != "model-b" {
+	if !fork.Model.Valid || fork.Model.String != "model-b" {
 		t.Fatalf("fork model = %v, want model-b", fork.Model)
 	}
 }
@@ -951,7 +951,7 @@ func TestModelCommandPartialModel(t *testing.T) {
 		t.Fatalf("chat /model b: expected 202, got %d: %s", w.Code, w.Body.String())
 	}
 	updated, _ := database.GetConversationByID(ctx, id)
-	if updated.Model == nil || *updated.Model != "model-b" {
+	if !updated.Model.Valid || updated.Model.String != "model-b" {
 		t.Fatalf("expected model-b via partial, got %v", updated.Model)
 	}
 }
@@ -975,12 +975,12 @@ func TestModelCommandAmbiguousPartial(t *testing.T) {
 		t.Fatalf("chat: expected 202, got %d: %s", w.Code, w.Body.String())
 	}
 	updated, _ := database.GetConversationByID(ctx, id)
-	if updated.Model == nil || *updated.Model != "model-a" {
+	if !updated.Model.Valid || updated.Model.String != "model-a" {
 		t.Fatalf("ambiguous partial must not switch, got %v", updated.Model)
 	}
 	mc := lastModelChange(listMessages(t, database, id))
 	var ud ModelChangeUserData
-	json.Unmarshal([]byte(*mc.UserData), &ud)
+	json.Unmarshal([]byte(mc.UserData.String), &ud)
 	if !strings.Contains(ud.Text, "matches several models") {
 		t.Fatalf("expected multi-candidate message, got %q", ud.Text)
 	}
@@ -1005,7 +1005,7 @@ func TestModelChangeMarkerDisplayNames(t *testing.T) {
 	}
 	mc := lastModelChange(listMessages(t, database, id))
 	var ud ModelChangeUserData
-	json.Unmarshal([]byte(*mc.UserData), &ud)
+	json.Unmarshal([]byte(mc.UserData.String), &ud)
 	if ud.FromDisplay != "Model A" || ud.ToDisplay != "Model B" {
 		t.Fatalf("expected display names Model A->Model B, got %q->%q", ud.FromDisplay, ud.ToDisplay)
 	}

@@ -4,6 +4,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"runtime"
 	"strings"
@@ -19,9 +20,16 @@ import (
 // Instead, we choose a single connection to use for writing (because
 // SQLite is single-writer) and use the rest as readers.
 type Pool struct {
-	db      *sql.DB
-	writer  chan *sql.Conn
-	readers chan *sql.Conn
+	db *sql.DB
+	// ownsDB is a pool that opened db itself (NewPool) and closes it; one
+	// given db by its caller (NewPoolFromDB) only returns the connections it
+	// held.
+	ownsDB bool
+	// writer and readers are tokens: one write transaction at a time (as
+	// Shelley requires) and readerCount reads, each on a connection borrowed
+	// from db for that transaction only and returned when it ends.
+	writer  chan struct{}
+	readers chan struct{}
 
 	hooksMu       sync.RWMutex
 	commitHooks   []func()
@@ -69,48 +77,57 @@ func (p *Pool) checkDiskFull(err error) {
 }
 
 func NewPool(dataSourceName string, readerCount int) (*Pool, error) {
-	if dataSourceName == ":memory:" {
-		return nil, fmt.Errorf(":memory: is not supported (because multiple conns are needed); use a temp file")
-	}
-	// TODO: a caller could override PRAGMA query_only.
-	// Consider opening two *sql.DBs, one configured as read-only,
-	// to ensure read-only transactions are always such.
-	db, err := sql.Open("sqlite", dataSourceName)
+	db, err := sql.Open("pgx", dataSourceName)
 	if err != nil {
 		return nil, fmt.Errorf("NewPool: %w", err)
 	}
-	numConns := readerCount + 1
-	if err := InitPoolDB(db, numConns); err != nil {
+	if err := InitPoolDB(db, readerCount+1); err != nil {
 		return nil, fmt.Errorf("NewPool: %w", err)
 	}
-
-	var conns []*sql.Conn
-	for range numConns {
-		conn, err := db.Conn(context.Background())
-		if err != nil {
-			db.Close()
-			return nil, fmt.Errorf("NewPool: %w", err)
-		}
-		conns = append(conns, conn)
+	p, err := NewPoolFromDB(db, readerCount)
+	if err != nil {
+		db.Close()
+		return nil, err
 	}
+	p.ownsDB = true
+	return p, nil
+}
 
+// NewPoolFromDB holds one writer and readerCount reader connections of db,
+// which may be another component's (csf passes its own database's): nothing
+// is set on a connection beyond the transaction Tx or Rx opens.
+func NewPoolFromDB(db *sql.DB, readerCount int) (*Pool, error) {
 	p := &Pool{
 		db:      db,
-		writer:  make(chan *sql.Conn, 1),
-		readers: make(chan *sql.Conn, readerCount),
+		writer:  make(chan struct{}, 1),
+		readers: make(chan struct{}, readerCount),
 	}
-	p.writer <- conns[0]
-	for _, conn := range conns[1:] {
-		// temp_store=MEMORY keeps read-side sorts and temp tables off the
-		// disk, so reads keep working when the disk is full.
-		if _, err := conn.ExecContext(context.Background(), "PRAGMA query_only=1; PRAGMA temp_store=MEMORY;"); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("NewPool reader pragmas: %w", err)
-		}
-		p.readers <- conn
+	p.writer <- struct{}{}
+	for range readerCount {
+		p.readers <- struct{}{}
 	}
-
 	return p, nil
+}
+
+// take waits for a token from slots and borrows a connection for it.
+func (p *Pool) take(ctx context.Context, slots chan struct{}) (*sql.Conn, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-slots:
+	}
+	conn, err := p.db.Conn(ctx)
+	if err != nil {
+		slots <- struct{}{}
+		return nil, err
+	}
+	return conn, nil
+}
+
+// give returns conn to db and its token to slots.
+func (p *Pool) give(slots chan struct{}, conn *sql.Conn) {
+	conn.Close()
+	slots <- struct{}{}
 }
 
 // InitPoolDB fixes the database/sql pool to a set of fixed connections.
@@ -120,14 +137,9 @@ func InitPoolDB(db *sql.DB, numConns int) error {
 	db.SetConnMaxLifetime(-1)
 	db.SetConnMaxIdleTime(-1)
 
-	initQueries := []string{
-		"PRAGMA journal_mode=wal;",
-		// Cap the -wal file so checkpoints truncate it back to this size
-		// instead of leaving it at its high-water mark (64 MiB).
-		"PRAGMA journal_size_limit=67108864;",
-		"PRAGMA busy_timeout=1000;",
-		"PRAGMA foreign_keys=ON;",
-	}
+	// PostgreSQL needs no per-connection setup here: NewPool sets each held
+	// connection's search_path.
+	initQueries := []string{}
 
 	var conns []*sql.Conn
 	for i := range numConns {
@@ -154,7 +166,10 @@ func InitPoolDB(db *sql.DB, numConns int) error {
 }
 
 func (p *Pool) Close() error {
-	return p.db.Close()
+	if p.ownsDB {
+		return p.db.Close()
+	}
+	return nil
 }
 
 type ctxKeyType int
@@ -184,14 +199,12 @@ func checkNoTx(ctx context.Context, typ string) {
 // such as PRAGMA wal_checkpoint.
 func (p *Pool) Exec(ctx context.Context, query string, args ...interface{}) (err error) {
 	checkNoTx(ctx, "Tx")
-	var conn *sql.Conn
-	select {
-	case <-ctx.Done():
-		return fmt.Errorf("Pool.Exec: %w", ctx.Err())
-	case conn = <-p.writer:
+	conn, err := p.take(ctx, p.writer)
+	if err != nil {
+		return fmt.Errorf("Pool.Exec: %w", err)
 	}
 	defer func() {
-		p.writer <- conn
+		p.give(p.writer, conn)
 		p.checkDiskFull(err)
 	}()
 	_, err = conn.ExecContext(ctx, query, args...)
@@ -200,22 +213,23 @@ func (p *Pool) Exec(ctx context.Context, query string, args ...interface{}) (err
 
 func (p *Pool) Tx(ctx context.Context, fn func(ctx context.Context, tx *Tx) error) (err error) {
 	checkNoTx(ctx, "Tx")
-	var conn *sql.Conn
-	select {
-	case <-ctx.Done():
-		return fmt.Errorf("Tx: %w", ctx.Err())
-	case conn = <-p.writer:
+	conn, err := p.take(ctx, p.writer)
+	if err != nil {
+		return fmt.Errorf("Tx: %w", err)
 	}
 
 	// If the context is closed, we want BEGIN to succeed and then
 	// we roll it back later.
-	if _, err := conn.ExecContext(context.WithoutCancel(ctx), "BEGIN IMMEDIATE;"); err != nil {
-		if strings.Contains(err.Error(), "SQLITE_BUSY") {
-			p.writer <- conn
-			return fmt.Errorf("Tx begin: %w", err)
-		}
-		// unrecoverable error, this will lock everything up
-		return fmt.Errorf("Tx LEAK %w", err)
+	if _, err := conn.ExecContext(context.WithoutCancel(ctx), "BEGIN;"); err != nil {
+		p.give(p.writer, conn)
+		return fmt.Errorf("Tx begin: %w", err)
+	}
+	// The connection may be shared with the rest of csf: the schema holds for
+	// this transaction only.
+	if _, err := conn.ExecContext(context.WithoutCancel(ctx), "SET LOCAL search_path TO "+Schema); err != nil {
+		err = errors.Join(fmt.Errorf("Tx search_path: %w", err), p.rollback(ctx, "Tx", err, conn))
+		p.give(p.writer, conn)
+		return err
 	}
 	tx := &Tx{
 		Rx:  &Rx{conn: conn, p: p, caller: callerOfCaller(1)},
@@ -238,7 +252,7 @@ func (p *Pool) Tx(ctx context.Context, fn func(ctx context.Context, tx *Tx) erro
 			// always return conn,
 			// either the entire database is closed or the conn is fine.
 		}
-		tx.p.writer <- conn
+		p.give(p.writer, conn)
 		if committed {
 			p.fireCommitHooks()
 		}
@@ -254,32 +268,30 @@ func (p *Pool) Tx(ctx context.Context, fn func(ctx context.Context, tx *Tx) erro
 
 func (p *Pool) Rx(ctx context.Context, fn func(ctx context.Context, rx *Rx) error) error {
 	checkNoTx(ctx, "Rx")
-	var conn *sql.Conn
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case conn = <-p.readers:
+	conn, err := p.take(ctx, p.readers)
+	if err != nil {
+		return err
 	}
 
 	// If the context is closed, we want BEGIN to succeed and then
 	// we roll it back later.
-	if _, err := conn.ExecContext(context.WithoutCancel(ctx), "BEGIN;"); err != nil {
-		if strings.Contains(err.Error(), "SQLITE_BUSY") {
-			p.readers <- conn
-			return fmt.Errorf("Rx begin: %w", err)
-		}
-		// an unrecoverable error, e.g. tx-inside-tx misuse or IOERR
-		return fmt.Errorf("Rx LEAK: %w", err)
+	if _, err := conn.ExecContext(context.WithoutCancel(ctx), "BEGIN READ ONLY;"); err != nil {
+		p.give(p.readers, conn)
+		return fmt.Errorf("Rx begin: %w", err)
+	}
+	if _, err := conn.ExecContext(context.WithoutCancel(ctx), "SET LOCAL search_path TO "+Schema); err != nil {
+		err = errors.Join(fmt.Errorf("Rx search_path: %w", err), p.rollback(ctx, "Rx", err, conn))
+		p.give(p.readers, conn)
+		return err
 	}
 	rx := &Rx{conn: conn, p: p, caller: callerOfCaller(1)}
 	rx.ctx = context.WithValue(ctx, CtxKey, rx)
 
-	var err error
 	defer func() {
 		err = p.rollback(rx.ctx, "Rx", err, rx.conn)
 		// always return conn,
 		// either the entire database is closed or the conn is fine.
-		rx.p.readers <- conn
+		p.give(p.readers, conn)
 		p.checkDiskFull(err)
 	}()
 	if ctxErr := rx.ctx.Err(); ctxErr != nil {

@@ -177,9 +177,9 @@ func (s *Server) handleConversationStatusBar(w http.ResponseWriter, r *http.Requ
 	}
 	status, err := runStatusBarHookIn(ctx, s.hooksDir, StatusBarHookInput{
 		ConversationID: conversationID,
-		Slug:           derefString(conversation.Slug),
-		Cwd:            derefString(conversation.Cwd),
-		Model:          derefString(conversation.Model),
+		Slug:           derefString(conversation.Slug.Ptr()),
+		Cwd:            derefString(conversation.Cwd.Ptr()),
+		Model:          derefString(conversation.Model.Ptr()),
 	})
 	if err != nil {
 		status = StatusBar{Error: fmt.Sprintf("%s hook failed: %v", hookStatusBar, err)}

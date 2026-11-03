@@ -51,11 +51,11 @@ func TestGitInfoForCommitInOtherRepo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(messages) != 1 || messages[0].UserData == nil {
+	if len(messages) != 1 || !messages[0].UserData.Valid {
 		t.Fatalf("want one gitinfo message, got %#v", messages)
 	}
 	var info GitInfoUserData
-	if err := json.Unmarshal([]byte(*messages[0].UserData), &info); err != nil {
+	if err := json.Unmarshal([]byte(messages[0].UserData.String), &info); err != nil {
 		t.Fatal(err)
 	}
 	if info.Worktree != other || info.Branch != "main" || info.Subject != "elsewhere" {
@@ -65,7 +65,7 @@ func TestGitInfoForCommitInOtherRepo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if conversation.Cwd == nil || *conversation.Cwd != home {
+	if !conversation.Cwd.Valid || conversation.Cwd.String != home {
 		t.Errorf("cwd = %v, want %s", conversation.Cwd, home)
 	}
 }

@@ -48,18 +48,18 @@ func TestMessageOtherUsageRoundTrip(t *testing.T) {
 	if len(messages) != 2 {
 		t.Fatalf("got %d messages, want 2", len(messages))
 	}
-	if messages[0].OtherUsageData == nil {
+	if !messages[0].OtherUsageData.Valid {
 		t.Fatal("message[0].OtherUsageData = nil, want JSON array")
 	}
 	var back []llm.PurposedUsage
-	if err := json.Unmarshal([]byte(*messages[0].OtherUsageData), &back); err != nil {
+	if err := json.Unmarshal([]byte(messages[0].OtherUsageData.String), &back); err != nil {
 		t.Fatal(err)
 	}
 	if len(back) != 2 || back[0].Purpose != "keyword_search" || back[0].InputTokens != 100 || back[1].Purpose != "llm_one_shot" {
 		t.Errorf("round-trip = %+v", back)
 	}
-	if messages[1].OtherUsageData != nil {
-		t.Errorf("message[1].OtherUsageData = %v, want nil", *messages[1].OtherUsageData)
+	if messages[1].OtherUsageData.Valid {
+		t.Errorf("message[1].OtherUsageData = %v, want nil", messages[1].OtherUsageData.String)
 	}
 
 	// Forking copies other_usage_data onto the fork's copies.
@@ -74,14 +74,14 @@ func TestMessageOtherUsageRoundTrip(t *testing.T) {
 	if len(forkedMsgs) != 2 {
 		t.Fatalf("got %d forked messages, want 2", len(forkedMsgs))
 	}
-	if forkedMsgs[0].OtherUsageData == nil || *forkedMsgs[0].OtherUsageData != *messages[0].OtherUsageData {
-		t.Errorf("forked message[0].OtherUsageData = %v, want %v", forkedMsgs[0].OtherUsageData, *messages[0].OtherUsageData)
+	if !forkedMsgs[0].OtherUsageData.Valid || forkedMsgs[0].OtherUsageData.String != messages[0].OtherUsageData.String {
+		t.Errorf("forked message[0].OtherUsageData = %v, want %v", forkedMsgs[0].OtherUsageData, messages[0].OtherUsageData.String)
 	}
-	if forkedMsgs[0].ForkedFromMessageID == nil || *forkedMsgs[0].ForkedFromMessageID != messages[0].MessageID {
+	if !forkedMsgs[0].ForkedFromMessageID.Valid || forkedMsgs[0].ForkedFromMessageID.String != messages[0].MessageID {
 		t.Errorf("fork provenance missing: %v", forkedMsgs[0].ForkedFromMessageID)
 	}
-	if forkedMsgs[1].OtherUsageData != nil {
-		t.Errorf("forked message[1].OtherUsageData = %v, want nil", *forkedMsgs[1].OtherUsageData)
+	if forkedMsgs[1].OtherUsageData.Valid {
+		t.Errorf("forked message[1].OtherUsageData = %v, want nil", forkedMsgs[1].OtherUsageData.String)
 	}
 }
 
@@ -115,10 +115,10 @@ func TestCreateUsageMessage(t *testing.T) {
 	if !msg.ExcludedFromContext {
 		t.Error("slug marker must be excluded_from_context")
 	}
-	if msg.LlmData != nil {
-		t.Errorf("llm_data = %v, want nil: the marker has no content", *msg.LlmData)
+	if msg.LlmData.Valid {
+		t.Errorf("llm_data = %v, want nil: the marker has no content", msg.LlmData.String)
 	}
-	if got := mustParseOtherUsage(t, msg.OtherUsageData); len(got) != 1 || got[0].Purpose != "slug" || got[0].InputTokens != 10 {
+	if got := mustParseOtherUsage(t, msg.OtherUsageData.Ptr()); len(got) != 1 || got[0].Purpose != "slug" || got[0].InputTokens != 10 {
 		t.Errorf("other_usage_data = %+v, want the slug entry", got)
 	}
 
@@ -130,8 +130,8 @@ func TestCreateUsageMessage(t *testing.T) {
 	if len(messages) != 2 || messages[1].MessageID != msg.MessageID {
 		t.Fatalf("messages = %+v, want the user message then the slug marker", messages)
 	}
-	if messages[0].OtherUsageData != nil {
-		t.Errorf("user message was modified: %v", *messages[0].OtherUsageData)
+	if messages[0].OtherUsageData.Valid {
+		t.Errorf("user message was modified: %v", messages[0].OtherUsageData.String)
 	}
 
 	// Nothing to record: no marker, so we don't litter empty rows.
@@ -198,7 +198,7 @@ func TestForkDoesNotCopySlugMarker(t *testing.T) {
 	if len(forkedMsgs) != 1 {
 		t.Fatalf("forked messages = %+v, want just the user message", forkedMsgs)
 	}
-	if got := mustParseOtherUsage(t, forkedMsgs[0].OtherUsageData); len(got) != 1 || got[0].Purpose != "keyword_search" {
+	if got := mustParseOtherUsage(t, forkedMsgs[0].OtherUsageData.Ptr()); len(got) != 1 || got[0].Purpose != "keyword_search" {
 		t.Errorf("forked user message usage = %+v, want the keyword_search entry preserved", got)
 	}
 }

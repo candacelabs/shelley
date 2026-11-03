@@ -49,7 +49,7 @@ function cacheKey(language: string, source: string): string {
 function getWorker(): Worker {
   if (worker) return worker;
 
-  worker = new Worker("/markdown-highlight-worker.js");
+  worker = new Worker("markdown-highlight-worker.js");
   worker.addEventListener("message", ({ data }: MessageEvent<HighlightResponse>) => {
     const request = pending.get(data.id);
     if (!request) return;

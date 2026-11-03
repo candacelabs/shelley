@@ -244,11 +244,11 @@ func compactionEvidence(items []contextItem) (seqs []int64, toolUseIDs []string)
 		if it.source == nil {
 			continue
 		}
-		if it.source.UserData != nil {
+		if it.source.UserData.Valid {
 			var ud struct {
 				ContextNudge bool `json:"context_nudge"`
 			}
-			if json.Unmarshal([]byte(*it.source.UserData), &ud) == nil && ud.ContextNudge {
+			if json.Unmarshal([]byte(it.source.UserData.String), &ud) == nil && ud.ContextNudge {
 				seqs = append(seqs, it.from)
 			}
 		}
@@ -389,10 +389,10 @@ func collapsesAlone(it contextItem) (bool, error) {
 		return true, nil
 	case it.source.Type != string(db.MessageTypeUser) || isToolResultMessage(it.message):
 		return false, nil
-	case it.source.UserData == nil:
+	case !it.source.UserData.Valid:
 		return true, nil
 	}
-	tag, _, err := provenanceTag([]byte(*it.source.UserData))
+	tag, _, err := provenanceTag([]byte(it.source.UserData.String))
 	if err != nil {
 		return false, fmt.Errorf("message %s: %w", itemID(it), err)
 	}
@@ -761,14 +761,14 @@ func newContextNudger(at int, rows []generated.Message) (*contextNudger, error) 
 		if row.Type == string(db.MessageTypeInPlaceCompaction) {
 			break
 		}
-		if row.UserData == nil || (row.Type != string(db.MessageTypeUser) && row.Type != string(db.MessageTypeModelChange)) {
+		if !row.UserData.Valid || (row.Type != string(db.MessageTypeUser) && row.Type != string(db.MessageTypeModelChange)) {
 			continue
 		}
 		var ud struct {
 			ContextNudge       bool `json:"context_nudge"`
 			CompactNudgeTokens int  `json:"compact_nudge_tokens"`
 		}
-		if err := json.Unmarshal([]byte(*row.UserData), &ud); err != nil {
+		if err := json.Unmarshal([]byte(row.UserData.String), &ud); err != nil {
 			return nil, fmt.Errorf("decode context nudge state at %d: %w", row.SequenceID, err)
 		}
 		if ud.ContextNudge {
@@ -912,7 +912,7 @@ func (s *Server) handleCompactRequest(w http.ResponseWriter, r *http.Request) {
 		text += "\n\n" + instructions
 	}
 	message := llm.UserStringMessage(text)
-	modelID := derefString(conversation.Model)
+	modelID := derefString(conversation.Model.Ptr())
 	if modelID == "" {
 		modelID = s.effectiveDefaultModel(s.getModelList())
 	}

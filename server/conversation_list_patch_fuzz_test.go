@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/guregu/null/v5"
 	"math/rand"
 	"testing"
 	"time"
@@ -73,7 +74,7 @@ func mkRandConv(rng *rand.Rand) ConversationWithState {
 		ConversationListItem: db.ConversationListItem{
 			Conversation: generated.Conversation{
 				ConversationID:      randID(rng),
-				Slug:                &slug,
+				Slug:                null.StringFrom(slug),
 				UserInitiated:       true,
 				CreatedAt:           now,
 				UpdatedAt:           now,

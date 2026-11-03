@@ -70,13 +70,13 @@ func (e *liveMessageEnv) delegate(id, body string) (*heldLLMCall, string) {
 		e.t.Fatalf("no visible user message: %v", err)
 	}
 	var message llm.Message
-	if err := json.Unmarshal([]byte(*rows[len(rows)-1].LlmData), &message); err != nil {
+	if err := json.Unmarshal([]byte(rows[len(rows)-1].LlmData.String), &message); err != nil {
 		e.t.Fatal(err)
 	}
-	if message.Content[0].Text != chat.Message || rows[len(rows)-1].UserData == nil {
+	if message.Content[0].Text != chat.Message || !rows[len(rows)-1].UserData.Valid {
 		e.t.Fatalf("stored message %q differs from receipt %q", message.Content[0].Text, chat.Message)
 	}
-	if _, err := uuid.Parse(liveDeliveryIDFromUserData([]byte(*rows[len(rows)-1].UserData))); err != nil {
+	if _, err := uuid.Parse(liveDeliveryIDFromUserData([]byte(rows[len(rows)-1].UserData.String))); err != nil {
 		e.t.Fatalf("stored message lacks a delivery UUID: %v", err)
 	}
 	return e.held.waitCall(e.t, chat.Message), chat.Message
@@ -134,7 +134,7 @@ func TestLiveMessageSpeechIsNotACommand(t *testing.T) {
 		}
 		e.finish(conv.ConversationID, call)
 	}
-	if row, err := e.database.GetConversationByID(t.Context(), conv.ConversationID); err != nil || derefString(row.Model) != "predictable" {
+	if row, err := e.database.GetConversationByID(t.Context(), conv.ConversationID); err != nil || derefString(row.Model.Ptr()) != "predictable" {
 		t.Errorf("speech changed the model: %+v", row)
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
@@ -172,13 +172,13 @@ func TestLiveMessageDraftFirstSend(t *testing.T) {
 		t.Fatal(err)
 	}
 	options := db.ParseConversationOptions(row.ConversationOptions)
-	if row.IsDraft || derefString(row.Cwd) != cwd || derefString(row.Model) != "predictable" || options.Profile != "Personal" || options.ToolOverrides["bash"] != "off" || options.ThinkingLevel != "high" {
+	if row.IsDraft || derefString(row.Cwd.Ptr()) != cwd || derefString(row.Model.Ptr()) != "predictable" || options.Profile != "Personal" || options.ToolOverrides["bash"] != "off" || options.ThinkingLevel != "high" {
 		t.Fatalf("first send settings: %+v options=%+v", row, options)
 	}
 
 	call, _ = e.delegate(draft.ConversationID, `{"transcript":"keep going","model":"unavailable","cwd":"/tmp/unrelated","conversation_options":{"profile":"Nope"}}`)
 	e.finish(draft.ConversationID, call)
-	if again, err := e.database.GetConversationByID(t.Context(), draft.ConversationID); err != nil || again.ConversationOptions != row.ConversationOptions || derefString(again.Cwd) != cwd {
+	if again, err := e.database.GetConversationByID(t.Context(), draft.ConversationID); err != nil || again.ConversationOptions != row.ConversationOptions || derefString(again.Cwd.Ptr()) != cwd {
 		t.Errorf("a later delegation changed settings: %+v", again)
 	}
 }

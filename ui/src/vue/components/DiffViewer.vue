@@ -1830,7 +1830,7 @@ async function saveCurrentFile() {
   const fullPath = gitRoot.value + "/" + selectedFile.value;
   try {
     saveStatus.value = "saving";
-    const response = await fetch("/api/write-file", {
+    const response = await fetch("api/write-file", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path: fullPath, content }),

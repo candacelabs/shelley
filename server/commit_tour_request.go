@@ -205,8 +205,8 @@ func commitTourStatusForWorker(conversation generated.Conversation, request *db.
 		WorkerConversationID: conversation.ConversationID,
 		Error:                request.Error,
 	}
-	if conversation.Slug != nil {
-		status.WorkerSlug = *conversation.Slug
+	if conversation.Slug.Valid {
+		status.WorkerSlug = conversation.Slug.String
 	}
 	if status.Status == "complete" {
 		status.Status = commitTourStatusFailed
@@ -326,7 +326,7 @@ func (s *Server) requestCommitTour(ctx context.Context, parentID string, target 
 	if parent.IsDraft {
 		return CommitTourStatus{}, false, errCommitTourDraft
 	}
-	if parent.ParentConversationID != nil {
+	if parent.ParentConversationID.Valid {
 		return CommitTourStatus{}, false, errCommitTourNested
 	}
 	if _, err := verifiedCommitTour(target); err == nil {
@@ -336,7 +336,7 @@ func (s *Server) requestCommitTour(ctx context.Context, parentID string, target 
 		return CommitTourStatus{}, false, err
 	}
 	if modelID == "" {
-		modelID = derefString(parent.Model)
+		modelID = derefString(parent.Model.Ptr())
 	}
 	if modelID == "" {
 		modelID = s.effectiveDefaultModel(s.getModelList())
@@ -422,8 +422,8 @@ func (s *Server) requestCommitTour(ctx context.Context, parentID string, target 
 		cancel:    cancel,
 		done:      make(chan struct{}),
 	}
-	if child.Slug != nil {
-		job.slug = *child.Slug
+	if child.Slug.Valid {
+		job.slug = child.Slug.String
 	}
 	s.commitTourJobs[key] = job
 	s.commitTourMu.Unlock()
@@ -756,14 +756,14 @@ func (s *Server) recoverCommitTourWorkersOnce(ctx context.Context) {
 			}
 			continue
 		}
-		model := derefString(current.Model)
+		model := derefString(current.Model.Ptr())
 		if model == "" {
 			model = s.effectiveDefaultModel(s.getModelList())
 		}
 		jobBaseCtx, cancel := context.WithCancel(context.Background())
 		job := &commitTourJob{
 			key:       key,
-			parentID:  derefString(current.ParentConversationID),
+			parentID:  derefString(current.ParentConversationID.Ptr()),
 			childID:   current.ConversationID,
 			target:    target,
 			model:     model,
@@ -772,8 +772,8 @@ func (s *Server) recoverCommitTourWorkersOnce(ctx context.Context) {
 			cancel:    cancel,
 			done:      make(chan struct{}),
 		}
-		if current.Slug != nil {
-			job.slug = *current.Slug
+		if current.Slug.Valid {
+			job.slug = current.Slug.String
 		}
 		s.commitTourJobs[key] = job
 		s.commitTourMu.Unlock()
@@ -822,7 +822,7 @@ func (s *Server) handleCommitTourCommand(ctx context.Context, w http.ResponseWri
 	}
 	cwd := requestedCwd
 	if cwd == "" {
-		cwd = derefString(conversation.Cwd)
+		cwd = derefString(conversation.Cwd.Ptr())
 	}
 	target, err := resolveCommitTourTarget(cwd, hash)
 	if err != nil {
@@ -905,13 +905,13 @@ func (s *Server) lastMessageShowsCommit(ctx context.Context, conversationID, has
 		return false, nil
 	}
 	last := tail[len(tail)-1]
-	if last.Type != string(db.MessageTypeGitInfo) || last.UserData == nil {
+	if last.Type != string(db.MessageTypeGitInfo) || !last.UserData.Valid {
 		return false, nil
 	}
 	var data struct {
 		Commit string `json:"commit"`
 	}
-	if err := json.Unmarshal([]byte(*last.UserData), &data); err != nil {
+	if err := json.Unmarshal([]byte(last.UserData.String), &data); err != nil {
 		return false, err
 	}
 	return data.Commit == hash, nil

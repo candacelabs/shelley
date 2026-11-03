@@ -60,7 +60,7 @@ func TestChatStampsUserEmail(t *testing.T) {
 		return findUserMessage(t, database, conversationID) != nil
 	})
 	msg := findUserMessage(t, database, conversationID)
-	if msg.UserEmail == nil || *msg.UserEmail != "alice@example.com" {
+	if !msg.UserEmail.Valid || msg.UserEmail.String != "alice@example.com" {
 		t.Fatalf("user message user_email = %v, want alice@example.com", msg.UserEmail)
 	}
 }
@@ -91,8 +91,8 @@ func TestChatWithoutEmailHeaderStoresNull(t *testing.T) {
 	waitFor(t, 5*time.Second, func() bool {
 		return findUserMessage(t, database, conversationID) != nil
 	})
-	if msg := findUserMessage(t, database, conversationID); msg.UserEmail != nil {
-		t.Fatalf("user message user_email = %q, want nil", *msg.UserEmail)
+	if msg := findUserMessage(t, database, conversationID); msg.UserEmail.Valid {
+		t.Fatalf("user message user_email = %q, want nil", msg.UserEmail.String)
 	}
 }
 
@@ -151,16 +151,16 @@ func TestQueuedChatStampsUserEmail(t *testing.T) {
 		}
 		bobMsg = nil
 		for i := range messages {
-			if messages[i].Type != string(db.MessageTypeUser) || messages[i].LlmData == nil {
+			if messages[i].Type != string(db.MessageTypeUser) || !messages[i].LlmData.Valid {
 				continue
 			}
-			if strings.Contains(*messages[i].LlmData, "queued") {
+			if strings.Contains(messages[i].LlmData.String, "queued") {
 				bobMsg = &messages[i]
 			}
 		}
 		return bobMsg != nil
 	})
-	if bobMsg.UserEmail == nil || *bobMsg.UserEmail != "bob@example.com" {
+	if !bobMsg.UserEmail.Valid || bobMsg.UserEmail.String != "bob@example.com" {
 		t.Fatalf("queued user message user_email = %v, want bob@example.com", bobMsg.UserEmail)
 	}
 }

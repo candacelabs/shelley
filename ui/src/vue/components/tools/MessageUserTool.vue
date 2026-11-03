@@ -177,7 +177,7 @@ const resultText = computed(() =>
 function attachmentURL(path: string, download = false): string {
   const q = new URLSearchParams({ path });
   if (download) q.set("download", "1");
-  return `/api/message/${encodeURIComponent(props.resultMessageId || "")}/attachment?${q}`;
+  return `api/message/${encodeURIComponent(props.resultMessageId || "")}/attachment?${q}`;
 }
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg|avif|bmp)$/i;

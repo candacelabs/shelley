@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/guregu/null/v5"
 	"io"
 	"net/http"
 	"slices"
@@ -117,7 +118,7 @@ func (s *Server) handleChannelStream(w http.ResponseWriter, r *http.Request) {
 	chatID := r.PathValue("chat")
 	var conv generated.Conversation
 	err := s.db.Queries(r.Context(), func(q *generated.Queries) (err error) {
-		conv, err = q.GetConversationByExternalID(r.Context(), &chatID)
+		conv, err = q.GetConversationByExternalID(r.Context(), null.StringFrom(chatID))
 		return err
 	})
 	if errors.Is(err, sql.ErrNoRows) {
@@ -174,10 +175,10 @@ func (s *Server) receiveChannelEvent(ctx context.Context, endpoint string, ev ch
 		}
 	}
 
-	if conv.Model == nil {
+	if !conv.Model.Valid {
 		return fmt.Errorf("conversation %s has no model", conversationID)
 	}
-	modelID := *conv.Model
+	modelID := conv.Model.String
 	service, err := s.llmManager.GetService(modelID)
 	if err != nil {
 		return fmt.Errorf("model %s: %w", modelID, err)
@@ -204,7 +205,7 @@ func (s *Server) receiveChannelEvent(ctx context.Context, endpoint string, ev ch
 			return err
 		}
 	}
-	if conv.ExternalEndpoint != nil {
+	if conv.ExternalEndpoint.Valid {
 		s.showChannelTyping(ctx, conversationID)
 	}
 	first, err := manager.AcceptUserMessage(ctx, service, modelID, message)
@@ -379,7 +380,7 @@ func (s *Server) recoverChannelQueues(ctx context.Context) {
 func (s *Server) channelConversation(ctx context.Context, endpoint, chatID, systemPrompt string) (*generated.Conversation, error) {
 	var conv generated.Conversation
 	err := s.db.Queries(ctx, func(q *generated.Queries) (err error) {
-		conv, err = q.GetConversationByExternalID(ctx, &chatID)
+		conv, err = q.GetConversationByExternalID(ctx, null.StringFrom(chatID))
 		return err
 	})
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -421,7 +422,7 @@ func (s *Server) channelMessageDelivered(ctx context.Context, conversationID, id
 	}
 	var n int64
 	err = s.db.Queries(ctx, func(q *generated.Queries) (err error) {
-		n, err = q.HasExternalMessage(ctx, generated.HasExternalMessageParams{ConversationID: conversationID, ExternalMessageID: &id})
+		n, err = q.HasExternalMessage(ctx, generated.HasExternalMessageParams{ConversationID: conversationID, ExternalMessageID: null.StringFrom(id)})
 		return err
 	})
 	return n != 0, err
@@ -476,14 +477,14 @@ func (s *Server) callChannel(ctx context.Context, conversationID, path string, b
 	if err != nil {
 		return err
 	}
-	if conv.ExternalEndpoint == nil {
+	if !conv.ExternalEndpoint.Valid {
 		return fmt.Errorf("conversation %s is not bound to an external chat", conversationID)
 	}
 	reqBody, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, *conv.ExternalEndpoint+path, bytes.NewReader(reqBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, conv.ExternalEndpoint.String+path, bytes.NewReader(reqBody))
 	if err != nil {
 		return err
 	}
@@ -581,7 +582,7 @@ func (c channelChat) answersChat(ctx context.Context, target claudetool.UserMess
 	if err != nil {
 		return false, err
 	}
-	return len(typed) == 0 || typed[0].ExternalMessageID != nil, nil
+	return len(typed) == 0 || typed[0].ExternalMessageID.Valid, nil
 }
 
 // React reacts to target in the chat, as a tapback if emoji is one. A

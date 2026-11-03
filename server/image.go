@@ -40,14 +40,14 @@ func (s *Server) handleMessageImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if msg.LlmData == nil {
+	if !msg.LlmData.Valid {
 		http.Error(w, "message has no llm_data", http.StatusNotFound)
 		return
 	}
 
 	// Parse llm_data to find the image
 	var llmMsg llm.Message
-	if err := json.Unmarshal([]byte(*msg.LlmData), &llmMsg); err != nil {
+	if err := json.Unmarshal([]byte(msg.LlmData.String), &llmMsg); err != nil {
 		http.Error(w, "failed to parse message data", http.StatusInternalServerError)
 		return
 	}

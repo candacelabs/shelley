@@ -31,7 +31,7 @@ func userMessageRowExists(t *testing.T, database *db.DB, convID, text string) bo
 		t.Fatalf("ListMessages: %v", err)
 	}
 	for _, m := range msgs {
-		if m.Type == string(db.MessageTypeUser) && m.LlmData != nil && strings.Contains(*m.LlmData, text) {
+		if m.Type == string(db.MessageTypeUser) && m.LlmData.Valid && strings.Contains(m.LlmData.String, text) {
 			return true
 		}
 	}
@@ -286,8 +286,8 @@ func testQueuedMessageNoDoubleFeedOnRestart(t *testing.T) {
 	msgs, _ := database.ListMessages(ctx, convID)
 	count := 0
 	for _, m := range msgs {
-		if m.Type == string(db.MessageTypeUser) && m.LlmData != nil &&
-			strings.Contains(*m.LlmData, "survived restart") {
+		if m.Type == string(db.MessageTypeUser) && m.LlmData.Valid &&
+			strings.Contains(m.LlmData.String, "survived restart") {
 			count++
 		}
 	}
@@ -305,8 +305,8 @@ func testQueuedMessageNoDoubleFeedOnRestart(t *testing.T) {
 	msgs, _ = database.ListMessages(ctx, convID)
 	count = 0
 	for _, m := range msgs {
-		if m.Type == string(db.MessageTypeUser) && m.LlmData != nil &&
-			strings.Contains(*m.LlmData, "survived restart") {
+		if m.Type == string(db.MessageTypeUser) && m.LlmData.Valid &&
+			strings.Contains(m.LlmData.String, "survived restart") {
 			count++
 		}
 	}
@@ -457,8 +457,8 @@ func TestDrainWithoutLoopFeedsQueuedMessageOnce(t *testing.T) {
 	msgs, _ := database.ListMessages(ctx, convID)
 	count := 0
 	for _, m := range msgs {
-		if m.Type == string(db.MessageTypeUser) && m.LlmData != nil &&
-			strings.Contains(*m.LlmData, "exactly once") {
+		if m.Type == string(db.MessageTypeUser) && m.LlmData.Valid &&
+			strings.Contains(m.LlmData.String, "exactly once") {
 			count++
 		}
 	}
@@ -583,7 +583,7 @@ func TestDrainedMessageKeepsConversationWorking(t *testing.T) {
 				return
 			}
 			last := msgs[len(msgs)-1]
-			if !conv.AgentWorking && last.Type == string(db.MessageTypeUser) && last.LlmData != nil && strings.Contains(*last.LlmData, "queued behind") {
+			if !conv.AgentWorking && last.Type == string(db.MessageTypeUser) && last.LlmData.Valid && strings.Contains(last.LlmData.String, "queued behind") {
 				mu.Lock()
 				idleWhileUnanswered = append(idleWhileUnanswered, conv.QueuedMessages)
 				mu.Unlock()

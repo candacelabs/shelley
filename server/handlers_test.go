@@ -304,8 +304,8 @@ func TestHandleRenameConversation(t *testing.T) {
 		t.Fatalf("Failed to unmarshal response: %v", err)
 	}
 
-	if *renamedConv.Slug != newSlug {
-		t.Errorf("Expected slug '%s', got '%s'", newSlug, *renamedConv.Slug)
+	if renamedConv.Slug.String != newSlug {
+		t.Errorf("Expected slug '%s', got '%s'", newSlug, renamedConv.Slug.String)
 	}
 
 	// Test with invalid JSON

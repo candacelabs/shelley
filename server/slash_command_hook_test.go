@@ -79,8 +79,8 @@ printf 'SHOUT: %s' "$SHELLEY_SLASH_ARGS" | tr a-z A-Z
 		t.Fatal("user message was never recorded")
 	}
 	var payload string
-	if userMsg.LlmData != nil {
-		payload = *userMsg.LlmData
+	if userMsg.LlmData.Valid {
+		payload = userMsg.LlmData.String
 	}
 	if !strings.Contains(payload, "SHOUT: HELLO WORLD") {
 		t.Errorf("expected hook output in recorded message, got: %s", payload)

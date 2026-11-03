@@ -107,14 +107,14 @@ func waitForBashResult(t *testing.T, database *db.DB, conversationID, expectedTe
 
 		// Look for a tool result from bash tool that contains the expected text
 		for _, msg := range messages {
-			if msg.LlmData == nil {
+			if !msg.LlmData.Valid {
 				continue
 			}
 			// The tool result for bash should contain the pwd output
 			// We distinguish it from the change_dir result by looking for the newline at the end
 			// (pwd outputs the path with a newline, change_dir outputs "Changed working directory to: ...")
 			// JSON encodes newline as \n so we check for that
-			if strings.Contains(*msg.LlmData, expectedText+`\n`) {
+			if strings.Contains(msg.LlmData.String, expectedText+`\n`) {
 				return
 			}
 		}
@@ -126,8 +126,8 @@ func waitForBashResult(t *testing.T, database *db.DB, conversationID, expectedTe
 	t.Log("Messages in conversation:")
 	for i, msg := range messages {
 		t.Logf("  Message %d: type=%s", i, msg.Type)
-		if msg.LlmData != nil {
-			t.Logf("    data: %s", truncate(*msg.LlmData, 300))
+		if msg.LlmData.Valid {
+			t.Logf("    data: %s", truncate(msg.LlmData.String, 300))
 		}
 	}
 	t.Fatalf("did not find bash result containing %q within %v", expectedText, timeout)
@@ -143,7 +143,7 @@ func waitForMessageContaining(t *testing.T, database *db.DB, conversationID, tex
 			t.Fatalf("failed to get messages: %v", err)
 		}
 		for _, msg := range messages {
-			if msg.LlmData != nil && strings.Contains(*msg.LlmData, text) {
+			if msg.LlmData.Valid && strings.Contains(msg.LlmData.String, text) {
 				return
 			}
 		}
@@ -214,7 +214,7 @@ func TestChangeDirBroadcastsCwdUpdate(t *testing.T) {
 	conversationID := conversation.ConversationID
 
 	// Verify initial cwd
-	if conversation.Cwd == nil || *conversation.Cwd != tmpDir {
+	if !conversation.Cwd.Valid || conversation.Cwd.String != tmpDir {
 		t.Fatalf("expected initial cwd %q, got %v", tmpDir, conversation.Cwd)
 	}
 
@@ -276,7 +276,7 @@ func TestChangeDirBroadcastsCwdUpdate(t *testing.T) {
 		select {
 		case event := <-events:
 			// Check if this event has the updated cwd
-			if event.Conversation != nil && event.Conversation.Cwd != nil && *event.Conversation.Cwd == subDir {
+			if event.Conversation != nil && event.Conversation.Cwd.Valid && event.Conversation.Cwd.String == subDir {
 				// Success! The UI would receive this update
 				return
 			}
@@ -339,15 +339,15 @@ func TestChangeDirBroadcastsConversationListPatch(t *testing.T) {
 		state = mustApplyPatch(t, state, patch.Patch)
 		verifyHash(t, state, patch.NewHash)
 		prevHash = patch.NewHash
-		if len(state) == 1 && state[0].Cwd != nil && *state[0].Cwd == subDir {
+		if len(state) == 1 && state[0].Cwd.Valid && state[0].Cwd.String == subDir {
 			streamCancel()
 			<-done
 			return
 		}
 	}
 	var got string
-	if len(state) == 1 && state[0].Cwd != nil {
-		got = *state[0].Cwd
+	if len(state) == 1 && state[0].Cwd.Valid {
+		got = state[0].Cwd.String
 	}
 	t.Fatalf("expected patched cwd %q, got %q (state=%+v)", subDir, got, state)
 }

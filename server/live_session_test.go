@@ -137,7 +137,7 @@ func TestLiveSession(t *testing.T) {
 	if voicePrompt(req) != juniper || !strings.Contains(req.Session.Instructions, "Backend model: model-b.") || !strings.Contains(req.Session.Instructions, "Working directory: "+cwd+".") {
 		t.Errorf("draft selection: %s", req.Session.Instructions)
 	}
-	if row, err := e.database.GetConversationByID(t.Context(), draft.ConversationID); err != nil || !row.IsDraft || row.Model != nil {
+	if row, err := e.database.GetConversationByID(t.Context(), draft.ConversationID); err != nil || !row.IsDraft || row.Model.Valid {
 		t.Fatalf("calling changed the draft: %+v", row)
 	}
 }

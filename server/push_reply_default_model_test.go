@@ -56,7 +56,7 @@ func TestChatEmptyModelUsesConversationModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload conversation: %v", err)
 	}
-	if got.Model == nil || *got.Model != "some-other-model" {
+	if !got.Model.Valid || got.Model.String != "some-other-model" {
 		t.Fatalf("model not persisted after first send: got %v", got.Model)
 	}
 

@@ -16,7 +16,7 @@ func (s *Server) transcriptionPrompt(ctx context.Context, conversationID string,
 	if err != nil {
 		return "", err
 	}
-	return buildTranscriptionPrompt(hostname, derefString(conversation.Cwd), derefString(conversation.Slug), review), nil
+	return buildTranscriptionPrompt(hostname, derefString(conversation.Cwd.Ptr()), derefString(conversation.Slug.Ptr()), review), nil
 }
 
 // buildTranscriptionPrompt describes a dictated instruction, or, when review

@@ -414,11 +414,11 @@ watch(
         // saving. Only AGENTS.md resolves its path on the server; ordinary
         // /api/read-file loads must not wait for unrelated files' saves.
         await waitForPendingFileWrites(
-          props.loadUrl === "/api/user-agents-md" ? undefined : props.path,
+          props.loadUrl === "api/user-agents-md" ? undefined : props.path,
         );
         if (cancelled) return;
         const response = await fetch(
-          props.loadUrl || `/api/read?path=${encodeURIComponent(props.path)}`,
+          props.loadUrl || `api/read?path=${encodeURIComponent(props.path)}`,
         );
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         let json: { path?: string; content: string } | null = null;

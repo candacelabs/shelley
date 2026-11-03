@@ -374,7 +374,7 @@ async function handleRebaseUpgrade() {
       ...(dir ? { cwd: dir } : {}),
     });
     emit("close");
-    window.history.pushState({}, "", `/c/${response.conversation_id}`);
+    window.history.pushState({}, "", `c/${response.conversation_id}`);
     window.dispatchEvent(new PopStateEvent("popstate"));
   } catch (err) {
     upgradeError.value = err instanceof Error ? err.message : String(err);

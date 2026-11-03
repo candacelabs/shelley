@@ -86,8 +86,8 @@ func formatBtwFrozenReference(logger logWarner, rows []generated.Message, recent
 	}
 	for _, it := range items {
 		message := it.message
-		if it.source != nil && it.source.Type == string(db.MessageTypeUser) && it.source.UserData != nil {
-			message, err = messageWithSenderProvenance(message, []byte(*it.source.UserData))
+		if it.source != nil && it.source.Type == string(db.MessageTypeUser) && it.source.UserData.Valid {
+			message, err = messageWithSenderProvenance(message, []byte(it.source.UserData.String))
 			if err != nil {
 				return "", fmt.Errorf("apply frozen parent message provenance %s: %w", it.source.MessageID, err)
 			}

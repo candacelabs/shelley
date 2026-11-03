@@ -244,7 +244,7 @@ func TestGPT61TerraStreamsToolCallThroughResponses(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if conversation.Model == nil || *conversation.Model != modelID {
+			if !conversation.Model.Valid || conversation.Model.String != modelID {
 				t.Fatalf("persisted model = %v, want %q", conversation.Model, modelID)
 			}
 

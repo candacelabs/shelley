@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/guregu/null/v5"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -53,7 +54,7 @@ func newCompactTestConversation(t *testing.T, opts db.ConversationOptions) *comp
 func (c *compactTestConversation) endTurns() int {
 	n := 0
 	for _, m := range listMessages(c.t, c.database, c.id) {
-		if m.Type == string(db.MessageTypeAgent) && m.LlmData != nil && strings.Contains(*m.LlmData, `"EndOfTurn":true`) {
+		if m.Type == string(db.MessageTypeAgent) && m.LlmData.Valid && strings.Contains(m.LlmData.String, `"EndOfTurn":true`) {
 			n++
 		}
 	}
@@ -73,11 +74,11 @@ func (c *compactTestConversation) turn(msg string) {
 func (c *compactTestConversation) rows() map[int64]llm.Message {
 	out := map[int64]llm.Message{}
 	for _, m := range listMessages(c.t, c.database, c.id) {
-		if m.LlmData == nil {
+		if !m.LlmData.Valid {
 			continue
 		}
 		var msg llm.Message
-		if err := json.Unmarshal([]byte(*m.LlmData), &msg); err != nil {
+		if err := json.Unmarshal([]byte(m.LlmData.String), &msg); err != nil {
 			c.t.Fatal(err)
 		}
 		out[m.SequenceID] = msg
@@ -89,7 +90,7 @@ func (c *compactTestConversation) rows() map[int64]llm.Message {
 func (c *compactTestConversation) seqWith(s string) int64 {
 	c.t.Helper()
 	for _, m := range listMessages(c.t, c.database, c.id) {
-		if m.LlmData != nil && strings.Contains(*m.LlmData, s) {
+		if m.LlmData.Valid && strings.Contains(m.LlmData.String, s) {
 			return m.SequenceID
 		}
 	}
@@ -118,11 +119,11 @@ func (c *compactTestConversation) lastToolOutput() (string, bool) {
 	var text string
 	var isErr bool
 	for _, m := range listMessages(c.t, c.database, c.id) {
-		if m.LlmData == nil {
+		if !m.LlmData.Valid {
 			continue
 		}
 		var msg llm.Message
-		if err := json.Unmarshal([]byte(*m.LlmData), &msg); err != nil {
+		if err := json.Unmarshal([]byte(m.LlmData.String), &msg); err != nil {
 			c.t.Fatal(err)
 		}
 		for _, ct := range msg.Content {
@@ -158,8 +159,8 @@ func requestDump(req *llm.Request) string {
 func (c *compactTestConversation) systemCardHasTool(name string) bool {
 	c.t.Helper()
 	for _, m := range listMessages(c.t, c.database, c.id) {
-		if m.Type == string(db.MessageTypeSystem) && m.DisplayData != nil {
-			return strings.Contains(*m.DisplayData, `"name":"`+name+`"`)
+		if m.Type == string(db.MessageTypeSystem) && m.DisplayData.Valid {
+			return strings.Contains(m.DisplayData.String, `"name":"`+name+`"`)
 		}
 	}
 	c.t.Fatal("no system prompt")
@@ -350,9 +351,9 @@ func TestCompactInPlaceNudge(t *testing.T) {
 	nudges := func() []llm.Message {
 		var out []llm.Message
 		for _, m := range listMessages(t, c.database, c.id) {
-			if m.UserData != nil && strings.Contains(*m.UserData, `"context_nudge":true`) {
+			if m.UserData.Valid && strings.Contains(m.UserData.String, `"context_nudge":true`) {
 				var msg llm.Message
-				if err := json.Unmarshal([]byte(*m.LlmData), &msg); err != nil {
+				if err := json.Unmarshal([]byte(m.LlmData.String), &msg); err != nil {
 					t.Fatal(err)
 				}
 				out = append(out, msg)
@@ -436,7 +437,7 @@ func TestCompactInPlaceNudgeThresholdChange(t *testing.T) {
 	nudges := func() int {
 		n := 0
 		for _, m := range listMessages(t, c.database, c.id) {
-			if m.UserData != nil && strings.Contains(*m.UserData, `"context_nudge":true`) {
+			if m.UserData.Valid && strings.Contains(m.UserData.String, `"context_nudge":true`) {
 				n++
 			}
 		}
@@ -478,7 +479,7 @@ func TestCompactInPlaceNudgeThresholdChange(t *testing.T) {
 func TestContextNudger(t *testing.T) {
 	usage := `{"input_tokens":260000}`
 	row := func(kind db.MessageType, data string) generated.Message {
-		return generated.Message{Type: string(kind), UserData: &data}
+		return generated.Message{Type: string(kind), UserData: null.StringFrom(data)}
 	}
 	changed := row(db.MessageTypeModelChange, `{"compact_nudge_tokens":200000}`)
 	nudged := row(db.MessageTypeUser, `{"context_nudge":true}`)
@@ -496,7 +497,7 @@ func TestContextNudger(t *testing.T) {
 		{"compacted", []generated.Message{changed, {Type: string(db.MessageTypeInPlaceCompaction)}}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rows := append([]generated.Message{{UsageData: &usage}}, tc.rows...)
+			rows := append([]generated.Message{{UsageData: null.StringFrom(usage)}}, tc.rows...)
 			n, err := newContextNudger(0, rows)
 			if err != nil {
 				t.Fatal(err)
@@ -509,7 +510,7 @@ func TestContextNudger(t *testing.T) {
 			}
 		})
 	}
-	n, err := newContextNudger(0, []generated.Message{{UsageData: &usage}})
+	n, err := newContextNudger(0, []generated.Message{{UsageData: null.StringFrom(usage)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -714,7 +715,7 @@ func compactCallItem(seq int64, id string) contextItem {
 func nudgeItem(seq int64) contextItem {
 	it := textItem(seq, llm.MessageRoleUser, "Context is 160k.")
 	nudge := `{"context_nudge":true}`
-	it.source.UserData = &nudge
+	it.source.UserData = null.StringFrom(nudge)
 	return it
 }
 
@@ -947,7 +948,7 @@ func TestBuildCompaction(t *testing.T) {
 
 func TestCollapsesAlone(t *testing.T) {
 	withUserData := func(it contextItem, ud string) contextItem {
-		it.source.UserData = &ud
+		it.source.UserData = null.StringFrom(ud)
 		return it
 	}
 	for _, tc := range []struct {
@@ -1031,8 +1032,8 @@ func postEnableCompactInPlace(t *testing.T, s *Server, conversationID string) *h
 func (c *compactTestConversation) toolEnabledMarkers() int {
 	n := 0
 	for _, m := range listMessages(c.t, c.database, c.id) {
-		if m.Type == string(db.MessageTypeModelChange) && m.UserData != nil &&
-			strings.Contains(*m.UserData, `"tools_on":["compact_in_place"]`) {
+		if m.Type == string(db.MessageTypeModelChange) && m.UserData.Valid &&
+			strings.Contains(m.UserData.String, `"tools_on":["compact_in_place"]`) {
 			n++
 		}
 	}
@@ -1080,8 +1081,8 @@ func TestEnableCompactInPlaceMidConversation(t *testing.T) {
 	c.turn("echo: two" + strings.Repeat(" ", 2000))
 	c.turn("echo: three")
 	for _, m := range listMessages(t, c.database, c.id) {
-		if m.UserData != nil && strings.Contains(*m.UserData, `"context_nudge":true`) {
-			t.Fatalf("nudged: %s", *m.LlmData)
+		if m.UserData.Valid && strings.Contains(m.UserData.String, `"context_nudge":true`) {
+			t.Fatalf("nudged: %s", m.LlmData.String)
 		}
 	}
 	req := c.ps.GetLastRequest()

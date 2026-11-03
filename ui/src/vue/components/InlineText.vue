@@ -15,7 +15,7 @@
         <a
           v-if="p.type === 'link' && p.href"
           :href="p.href"
-          :target="p.href.startsWith('/c/') ? undefined : '_blank'"
+          :target="p.href.startsWith('c/') ? undefined : '_blank'"
           rel="noopener noreferrer"
           class="text-link"
           >{{ p.content }}</a

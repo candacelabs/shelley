@@ -67,7 +67,7 @@ func TestSetConversationCwd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Cwd == nil || *got.Cwd != dest {
+	if !got.Cwd.Valid || got.Cwd.String != dest {
 		t.Errorf("conversation cwd = %v, want %q", got.Cwd, dest)
 	}
 
@@ -86,11 +86,11 @@ func TestSetConversationCwd(t *testing.T) {
 	var found *string
 	for i := range messages {
 		m := messages[i]
-		if m.Type == string(db.MessageTypeUser) && m.LlmData != nil && strings.Contains(*m.LlmData, dest) {
+		if m.Type == string(db.MessageTypeUser) && m.LlmData.Valid && strings.Contains(m.LlmData.String, dest) {
 			if m.ExcludedFromContext {
 				t.Errorf("cwd notice is excluded from context; the agent would never see it")
 			}
-			found = m.LlmData
+			found = m.LlmData.Ptr()
 			break
 		}
 	}
@@ -388,7 +388,7 @@ func TestSetConversationCwdRejectsBadPaths(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.Cwd == nil || *got.Cwd != start {
+			if !got.Cwd.Valid || got.Cwd.String != start {
 				t.Errorf("cwd moved on a rejected request: %v", got.Cwd)
 			}
 		})
@@ -439,20 +439,20 @@ func TestSetConversationCwdConcurrent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Cwd == nil {
+	if !got.Cwd.Valid {
 		t.Fatal("cwd is unset after concurrent moves")
 	}
 	// Whichever won, everything must agree on it.
-	if *got.Cwd != manager.Cwd() {
-		t.Errorf("row cwd %q != manager cwd %q", *got.Cwd, manager.Cwd())
+	if got.Cwd.String != manager.Cwd() {
+		t.Errorf("row cwd %q != manager cwd %q", got.Cwd.String, manager.Cwd())
 	}
-	if !slices.Contains(dirs, *got.Cwd) {
-		t.Errorf("cwd %q is none of the requested directories", *got.Cwd)
+	if !slices.Contains(dirs, got.Cwd.String) {
+		t.Errorf("cwd %q is none of the requested directories", got.Cwd.String)
 	}
 
 	// And the tools are actually there, not in some earlier winner's directory.
 	postChatMessage(t, server, id, "bash: pwd")
-	waitForBashResult(t, database, id, *got.Cwd, 10*time.Second)
+	waitForBashResult(t, database, id, got.Cwd.String, 10*time.Second)
 }
 
 // A draft's cwd is client state until the first send, and moving it through
@@ -516,7 +516,7 @@ func TestSetConversationCwdRefusesWhileWorking(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Cwd == nil || *got.Cwd != start {
+	if !got.Cwd.Valid || got.Cwd.String != start {
 		t.Errorf("cwd moved while the agent was working: %v", got.Cwd)
 	}
 }

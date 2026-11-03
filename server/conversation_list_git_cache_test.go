@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"github.com/guregu/null/v5"
 	"os/exec"
 	"reflect"
 	"testing"
@@ -146,9 +147,9 @@ func TestDecorateConversationsMixedCwds(t *testing.T) {
 		items[i] = db.ConversationListItem{
 			Conversation: generated.Conversation{
 				ConversationID:       fmt.Sprintf("conversation-%d", i),
-				Cwd:                  cwd,
+				Cwd:                  null.StringFromPtr(cwd),
 				AgentWorking:         i%2 == 0,
-				ParentConversationID: &parent,
+				ParentConversationID: null.StringFrom(parent),
 			},
 			Preview:               fmt.Sprintf("preview %d", i),
 			MaxSequenceID:         int64(i),
@@ -199,8 +200,8 @@ func TestDecorateConversationsRevalidatesNextCall(t *testing.T) {
 	runGit(t, repo, "init", "-q")
 	runGit(t, repo, "-c", "user.email=a@b", "-c", "user.name=t", "-c", "core.hooksPath=/dev/null", "commit", "--allow-empty", "-m", "one")
 	items := []db.ConversationListItem{
-		{Conversation: generated.Conversation{ConversationID: "first", Cwd: &repo}},
-		{Conversation: generated.Conversation{ConversationID: "second", Cwd: &repo}},
+		{Conversation: generated.Conversation{ConversationID: "first", Cwd: null.StringFrom(repo)}},
+		{Conversation: generated.Conversation{ConversationID: "second", Cwd: null.StringFrom(repo)}},
 	}
 	server := &Server{conversationListGitCache: newConversationListGitCache()}
 	before := server.decorateConversations(items)
@@ -225,7 +226,7 @@ func BenchmarkDecorateConversationsRepeatedCwd(b *testing.B) {
 			server := &Server{conversationListGitCache: newConversationListGitCache()}
 			items := make([]db.ConversationListItem, count)
 			for i := range items {
-				items[i].Cwd = &repo
+				items[i].Cwd = null.StringFrom(repo)
 			}
 			server.decorateConversations(items) // Warm the real packed-ref cache entry.
 			b.ReportAllocs()

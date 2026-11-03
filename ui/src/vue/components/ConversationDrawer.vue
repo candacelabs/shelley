@@ -672,7 +672,7 @@ const { t } = useI18n();
 // --- URL / modified-click helpers ---
 function conversationUrl(conversation: Conversation): string | null {
   if (!conversation.slug) return null;
-  return `/c/${conversation.slug}`;
+  return `c/${conversation.slug}`;
 }
 function handleModifiedClick(e: MouseEvent, conversation: Conversation): boolean {
   if (!(e.metaKey || e.ctrlKey || e.shiftKey)) return false;
@@ -1440,7 +1440,7 @@ function onSearchKeyDown(e: KeyboardEvent) {
 }
 
 function onNewConversationClick(e: MouseEvent) {
-  if (handleModifiedNavClick(e, "/new")) return;
+  if (handleModifiedNavClick(e, "new")) return;
   emit("new-conversation");
 }
 

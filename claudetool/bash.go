@@ -38,6 +38,9 @@ type BashTool struct {
 	BackgroundAfter time.Duration
 	// WorkingDir is the shared mutable working directory.
 	WorkingDir *MutableWorkingDir
+	// Wrap, if set, rewrites each command to run elsewhere (a sandbox); the
+	// job wrapper around it still runs here.
+	Wrap func(command, wd string) string
 	// GitTracker, if set, is told about the directories commands run git in.
 	GitTracker *gitstate.Tracker
 	// LLMProvider provides access to LLM services for tool validation
@@ -279,6 +282,9 @@ const (
 // and its combined output in log. It is deliberately not tied to a
 // context: a backgrounded job must outlive the tool call and Shelley.
 func (b *BashTool) makeBashCommand(command, wd string, log *os.File, exitPath string) *exec.Cmd {
+	if b.Wrap != nil {
+		command = b.Wrap(command, wd)
+	}
 	cmd := exec.Command("bash", "-c", bashJobWrapper, "shelley-job", command, exitPath)
 	cmd.Dir = wd
 	cmd.Stdin = nil

@@ -1,13 +1,13 @@
 <!-- Vue port of components/AgentsMdEditorModal.tsx. Thin wrapper that reads
      the user AGENTS.md path from window.__SHELLEY_INIT__ and renders
-     EditableFileModal with loadUrl="/api/user-agents-md". Emits "close"
+     EditableFileModal with loadUrl="api/user-agents-md". Emits "close"
      (React onClose). -->
 <template>
   <EditableFileModal
     :is-open="isOpen"
     :path="filePath"
     title="Edit AGENTS.md"
-    load-url="/api/user-agents-md"
+    load-url="api/user-agents-md"
     @close="emit('close')"
   />
 </template>

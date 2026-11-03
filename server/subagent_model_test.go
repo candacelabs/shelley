@@ -57,5 +57,5 @@ func conversationModel(t *testing.T, database *db.DB, conversationID string) str
 	if err != nil {
 		t.Fatal(err)
 	}
-	return derefString(conv.Model)
+	return derefString(conv.Model.Ptr())
 }

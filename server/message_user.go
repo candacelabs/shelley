@@ -59,7 +59,7 @@ func (f userMessageFinder) FindUserMessageBySequence(ctx context.Context, sequen
 		if m.SequenceID != sequenceID && origin != sequenceID {
 			continue
 		}
-		msg, err := parseLLMData(m.LlmData)
+		msg, err := parseLLMData(m.LlmData.Ptr())
 		if err != nil {
 			return claudetool.UserMessage{}, false, fmt.Errorf("message %s: %w", m.MessageID, err)
 		}
@@ -75,8 +75,8 @@ func typedUserMessage(m generated.Message, text string) (claudetool.UserMessage,
 		return claudetool.UserMessage{}, fmt.Errorf("message %s: %w", m.MessageID, err)
 	}
 	um := claudetool.UserMessage{ID: m.MessageID, SequenceID: seq, Text: text}
-	if m.ExternalMessageID != nil {
-		um.ExternalID = *m.ExternalMessageID
+	if m.ExternalMessageID.Valid {
+		um.ExternalID = m.ExternalMessageID.String
 	}
 	return um, nil
 }
@@ -87,11 +87,11 @@ const carriedFromKey = "carried_from_sequence_id"
 
 // originSequenceID is the sequence_id of the message m is a copy of, or of m.
 func originSequenceID(m generated.Message) (int64, error) {
-	if m.UserData == nil {
+	if !m.UserData.Valid {
 		return m.SequenceID, nil
 	}
 	var ud map[string]string
-	if err := json.Unmarshal([]byte(*m.UserData), &ud); err != nil {
+	if err := json.Unmarshal([]byte(m.UserData.String), &ud); err != nil {
 		return 0, err
 	}
 	if from, ok := ud[carriedFromKey]; ok {
@@ -164,7 +164,7 @@ func (s *Server) messageUserAttachmentPaths(ctx context.Context, messageID strin
 	if err != nil {
 		return nil, "", err
 	}
-	results, err := parseLLMData(row.LlmData)
+	results, err := parseLLMData(row.LlmData.Ptr())
 	if err != nil {
 		return nil, "", err
 	}
@@ -172,7 +172,7 @@ func (s *Server) messageUserAttachmentPaths(ctx context.Context, messageID strin
 	if err != nil {
 		return nil, "", err
 	}
-	calls, err := parseLLMData(call.LlmData)
+	calls, err := parseLLMData(call.LlmData.Ptr())
 	if err != nil {
 		return nil, "", err
 	}

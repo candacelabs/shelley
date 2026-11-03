@@ -108,7 +108,7 @@ const summary = computed(() => action.value || "profile");
 
 const speedscopeUrl = computed(() =>
   savedFilePath.value
-    ? `https://www.speedscope.app/#profileURL=${encodeURIComponent(window.location.origin + "/api/read?path=" + encodeURIComponent(savedFilePath.value))}`
+    ? `https://www.speedscope.app/#profileURL=${encodeURIComponent(window.location.origin + "api/read?path=" + encodeURIComponent(savedFilePath.value))}`
     : "",
 );
 

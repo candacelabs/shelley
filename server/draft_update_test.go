@@ -54,13 +54,13 @@ func TestUpdateDraftPartialFieldsIndependent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload conversation: %v", err)
 	}
-	if got.Model == nil || *got.Model != "test-model-2" {
+	if !got.Model.Valid || got.Model.String != "test-model-2" {
 		t.Fatalf("model not updated: got %v, want %q", got.Model, "test-model-2")
 	}
 	if got.Draft != "my unsent draft" {
 		t.Fatalf("draft text clobbered by model update: got %q", got.Draft)
 	}
-	if got.Cwd == nil || *got.Cwd != origCwd {
+	if !got.Cwd.Valid || got.Cwd.String != origCwd {
 		t.Fatalf("cwd clobbered by model update: got %v", got.Cwd)
 	}
 
@@ -73,10 +73,10 @@ func TestUpdateDraftPartialFieldsIndependent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload conversation: %v", err)
 	}
-	if got.Cwd == nil || *got.Cwd != "/tmp/newdir" {
+	if !got.Cwd.Valid || got.Cwd.String != "/tmp/newdir" {
 		t.Fatalf("cwd not updated: got %v, want %q", got.Cwd, "/tmp/newdir")
 	}
-	if got.Model == nil || *got.Model != "test-model-2" {
+	if !got.Model.Valid || got.Model.String != "test-model-2" {
 		t.Fatalf("model clobbered by cwd update: got %v", got.Model)
 	}
 	if got.Draft != "my unsent draft" {
@@ -95,10 +95,10 @@ func TestUpdateDraftPartialFieldsIndependent(t *testing.T) {
 	if got.Draft != "edited text" {
 		t.Fatalf("draft text not updated: got %q", got.Draft)
 	}
-	if got.Model == nil || *got.Model != "test-model-2" {
+	if !got.Model.Valid || got.Model.String != "test-model-2" {
 		t.Fatalf("model clobbered by text update: got %v", got.Model)
 	}
-	if got.Cwd == nil || *got.Cwd != "/tmp/newdir" {
+	if !got.Cwd.Valid || got.Cwd.String != "/tmp/newdir" {
 		t.Fatalf("cwd clobbered by text update: got %v", got.Cwd)
 	}
 	if !got.IsDraft {
@@ -113,7 +113,7 @@ func TestUpdateDraftPartialFieldsIndependent(t *testing.T) {
 	if resp.Draft != "edited text" {
 		t.Fatalf("response draft text: got %q", resp.Draft)
 	}
-	if resp.Model == nil || *resp.Model != "test-model-2" {
+	if !resp.Model.Valid || resp.Model.String != "test-model-2" {
 		t.Fatalf("response model: got %v", resp.Model)
 	}
 }
@@ -142,10 +142,10 @@ func TestUpdateDraftRejectsNonDraft(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload conversation: %v", err)
 	}
-	if got.Model == nil || *got.Model != origModel {
+	if !got.Model.Valid || got.Model.String != origModel {
 		t.Fatalf("non-draft model should be unchanged: got %v", got.Model)
 	}
-	if got.Cwd == nil || *got.Cwd != origCwd {
+	if !got.Cwd.Valid || got.Cwd.String != origCwd {
 		t.Fatalf("non-draft cwd should be unchanged: got %v", got.Cwd)
 	}
 }
@@ -177,7 +177,7 @@ func TestUpdateDraftRejectsUnsupportedModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload conversation: %v", err)
 	}
-	if got.Model == nil || *got.Model != "model-b" {
+	if !got.Model.Valid || got.Model.String != "model-b" {
 		t.Fatalf("model not updated: got %v", got.Model)
 	}
 }
@@ -249,7 +249,7 @@ func TestUpdateDraftModelFlowsToOmittedModelPromote(t *testing.T) {
 	if got.IsDraft {
 		t.Fatalf("conversation should have been promoted")
 	}
-	if got.Model == nil || *got.Model != "picked-model" {
+	if !got.Model.Valid || got.Model.String != "picked-model" {
 		t.Fatalf("promoted model: got %v, want %q", got.Model, "picked-model")
 	}
 
@@ -293,7 +293,7 @@ func TestUpdateDraftEmptyBodyBumpsUpdatedAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload conversation: %v", err)
 	}
-	if got.Draft != "my unsent draft" || got.Model == nil || *got.Model != origModel || got.Cwd == nil || *got.Cwd != origCwd {
+	if got.Draft != "my unsent draft" || !got.Model.Valid || got.Model.String != origModel || !got.Cwd.Valid || got.Cwd.String != origCwd {
 		t.Fatalf("empty body changed fields: draft=%q model=%v cwd=%v", got.Draft, got.Model, got.Cwd)
 	}
 	if !got.UpdatedAt.After(backdated.Add(time.Minute)) {

@@ -146,6 +146,6 @@ export function useSubagentLive(
 /** Client-side navigation to a conversation, mirroring SubagentTool's
  *  pushState + popstate pattern (App handles popstate). */
 export function navigateToConversationSlug(slug: string): void {
-  window.history.pushState({}, "", `/c/${slug}`);
+  window.history.pushState({}, "", `c/${slug}`);
   window.dispatchEvent(new PopStateEvent("popstate"));
 }

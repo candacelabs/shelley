@@ -4141,7 +4141,7 @@ function focusOrOpenTerminal() {
   openInAppTerminal();
 }
 function openExport() {
-  window.open(`/export/${props.conversationId}`, "_blank", "noopener");
+  window.open(`export/${props.conversationId}`, "_blank", "noopener");
 }
 async function archiveFromMenu() {
   if (!props.conversationId || !props.onArchiveConversation) return;
@@ -4211,7 +4211,7 @@ function handleMenuShortcut(e: KeyboardEvent) {
 }
 
 function onNewConversationClick(e: MouseEvent) {
-  if (handleModifiedNavClick(e, "/new")) return;
+  if (handleModifiedNavClick(e, "new")) return;
   props.onNewConversation();
 }
 
