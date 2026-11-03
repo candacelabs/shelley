@@ -24,7 +24,7 @@ test("skills uses the API prefix, encoded cwd and optional conversation, and pas
   ];
   t.mock.method(globalThis, "fetch", async (input: string, init?: RequestInit) => {
     requests.push({ url: new URL(input, "http://localhost"), signal: init?.signal });
-    return Response.json(input.startsWith("/api/skills?") ? { skills } : []);
+    return Response.json(input.startsWith("api/skills?") ? { skills } : []);
   });
   const controller = new AbortController();
   assert.deepEqual(await api.getSkills("/work space", null, controller.signal), {
@@ -55,8 +55,8 @@ test("skills discovers actual tools with namespaced identities, display names, s
   const requests: { url: string; signal?: AbortSignal | null }[] = [];
   t.mock.method(globalThis, "fetch", async (input: string, init?: RequestInit) => {
     requests.push({ url: input, signal: init?.signal });
-    if (input.startsWith("/api/skills?")) return Response.json({ skills: [] });
-    if (input === "/api/mcp/servers") return Response.json([{ name: "web tools" }]);
+    if (input.startsWith("api/skills?")) return Response.json({ skills: [] });
+    if (input === "api/mcp/servers") return Response.json([{ name: "web tools" }]);
     assert.equal(input, "/api/mcp/servers/web%20tools/tools");
     return Response.json({ tools: [search] });
   });
@@ -86,8 +86,8 @@ test("skills discovers actual tools with namespaced identities, display names, s
 test("one inaccessible MCP server warns without hiding skills or another server's tools", async (t) => {
   const skill = { name: "review", description: "Review text", activate: "load review" };
   t.mock.method(globalThis, "fetch", async (input: string) => {
-    if (input.startsWith("/api/skills?")) return Response.json({ skills: [skill] });
-    if (input === "/api/mcp/servers") return Response.json([{ name: "locked" }, { name: "web" }]);
+    if (input.startsWith("api/skills?")) return Response.json({ skills: [skill] });
+    if (input === "api/mcp/servers") return Response.json([{ name: "locked" }, { name: "web" }]);
     if (input.endsWith("/locked/tools")) return new Response("Log in to locked", { status: 401 });
     return Response.json({ tools: [search] });
   });
@@ -102,7 +102,7 @@ test("one inaccessible MCP server warns without hiding skills or another server'
 test("MCP registration lookup errors warn while ordinary skills remain available", async (t) => {
   const skills = [{ name: "review", description: "Review text", activate: "load review" }];
   t.mock.method(globalThis, "fetch", async (input: string) =>
-    input.startsWith("/api/skills?")
+    input.startsWith("api/skills?")
       ? Response.json({ skills })
       : new Response("Offline", { status: 503 }),
   );
@@ -126,8 +126,8 @@ test("a stalled server times out after five seconds without hiding healthy tools
   });
   const skill = { name: "review", description: "Review text", activate: "load review" };
   t.mock.method(globalThis, "fetch", async (input: string, init?: RequestInit) => {
-    if (input.startsWith("/api/skills?")) return Response.json({ skills: [skill] });
-    if (input === "/api/mcp/servers") return Response.json([{ name: "web" }, { name: "slow" }]);
+    if (input.startsWith("api/skills?")) return Response.json({ skills: [skill] });
+    if (input === "api/mcp/servers") return Response.json([{ name: "web" }, { name: "slow" }]);
     if (input.endsWith("/web/tools")) return Response.json({ tools: [search] });
     return new Promise<Response>((_resolve, reject) => {
       init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
@@ -148,8 +148,8 @@ test("a stalled server times out after five seconds without hiding healthy tools
 
 test("tool names cannot inject newlines or backticks into activation instructions", async (t) => {
   t.mock.method(globalThis, "fetch", async (input: string) => {
-    if (input.startsWith("/api/skills?")) return Response.json({ skills: [] });
-    if (input === "/api/mcp/servers") return Response.json([{ name: "web" }]);
+    if (input.startsWith("api/skills?")) return Response.json({ skills: [] });
+    if (input === "api/mcp/servers") return Response.json([{ name: "web" }]);
     return Response.json({
       tools: [search, { ...search, name: "bad`name" }, { ...search, name: "bad\nname" }],
     });
@@ -165,8 +165,8 @@ test("tool names cannot inject newlines or backticks into activation instruction
 test("aborting MCP discovery rejects instead of returning an authorization warning", async (t) => {
   const controller = new AbortController();
   t.mock.method(globalThis, "fetch", async (input: string) => {
-    if (input.startsWith("/api/skills?")) return Response.json({ skills: [] });
-    if (input === "/api/mcp/servers") return Response.json([{ name: "web" }]);
+    if (input.startsWith("api/skills?")) return Response.json({ skills: [] });
+    if (input === "api/mcp/servers") return Response.json([{ name: "web" }]);
     controller.abort();
     throw controller.signal.reason;
   });
