@@ -62,8 +62,8 @@
 > | | |
 > |---|---|
 > | based on | upstream `73fe06f` |
-> | not merged yet | upstream's 60 later commits: they add 10 SQLite migrations (projects, workspaces, project VMs, message routes) and ~900 lines of SQLite queries that must be ported to PostgreSQL first. Upstream is merged in, never rebased over. |
-> | `db` tests | on PostgreSQL (a throwaway cluster from `initdb` on `PATH`, or `SHELLEY_TEST_DATABASE_URL`): 82 pass; 21 written for SQLite (`PRAGMA`, `sqlite_schema`, FTS5 snippets) still fail |
+> | not merged yet | upstream's 60 later commits: they add 10 SQLite migrations (projects, workspaces, project VMs, message routes) and ~900 lines of SQLite queries that must be ported to PostgreSQL first ([#1](https://github.com/candacelabs/shelley/issues/1)). Upstream is merged in, never rebased over. |
+> | `db` tests | on PostgreSQL (a throwaway cluster from `initdb` on `PATH`, or `SHELLEY_TEST_DATABASE_URL`): 82 pass; 21 written for SQLite (`PRAGMA`, `sqlite_schema`, FTS5 snippets) still fail ([#2](https://github.com/candacelabs/shelley/issues/2)) |
 > | `ui` | type checks and unit tests pass |
 
 ---
