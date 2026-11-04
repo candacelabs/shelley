@@ -1025,12 +1025,14 @@ func applyPatchHunkSelector(header string) (int, string, error) {
 }
 
 func (p *PatchTool) runInput(ctx context.Context, input PatchInput) llm.ToolOut {
-	if p.Refusal != nil {
-		return llm.ErrorToolOut(p.Refusal)
-	}
 	vm, err := targetVM(p.VM, input.SSHTarget)
 	if err != nil {
 		return llm.ErrorToolOut(err)
+	}
+	// The refusal is the host's confinement failing: a patch aimed at the
+	// conversation's VM never touches this host, so it goes on.
+	if vm == nil && p.Refusal != nil {
+		return llm.ErrorToolOut(p.Refusal)
 	}
 	input.vm = vm
 	if vm != nil {
