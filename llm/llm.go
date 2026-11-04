@@ -144,7 +144,7 @@ func PatchProfile(svc Service) string {
 func ModelPatchProfile(model string) string {
 	model = strings.ToLower(model)
 	model = model[strings.LastIndex(model, "/")+1:]
-	if model == "glm" || strings.HasPrefix(model, "glm-") {
+	if model == "glm" || strings.HasPrefix(model, "glm-") || strings.HasPrefix(model, "qwen") {
 		return "simple"
 	}
 	return "nested"

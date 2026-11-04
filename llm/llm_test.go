@@ -399,6 +399,7 @@ func TestModelPatchProfile(t *testing.T) {
 		{"glm-5.3-fireworks", "simple"},
 		{"accounts/fireworks/models/glm-5p3-flash", "simple"},
 		{"z-ai/GLM-5.3", "simple"},
+		{"qwen3.8-flash-next", "simple"},
 		{"", "nested"},
 		{"claude-sonnet-4-6", "nested"},
 		{"gpt-6-sol", "nested"},
