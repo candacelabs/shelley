@@ -2,6 +2,7 @@ package claudetool
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sync"
 	"time"
@@ -209,9 +210,13 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 			workingDir = "/"
 		}
 	}
+	var sandboxDir string
+	var sandboxErr error
 	if cfg.Sandbox != nil {
 		if dir, err := cfg.Sandbox.WorkingDir(ctx, cfg.ConversationID); err == nil {
-			workingDir = dir
+			workingDir, sandboxDir = dir, dir
+		} else {
+			sandboxErr = fmt.Errorf("csf: this conversation's sandbox did not open; refusing to write on the host: %w", err)
 		}
 	}
 	wd := NewMutableWorkingDir(workingDir)
@@ -243,7 +248,7 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 			patchProfile = llm.PatchProfile(svc)
 		}
 	}
-	patchTool := &PatchTool{WorkingDir: wd, Provider: patchProvider, Profile: patchProfile, VM: cfg.VM}
+	patchTool := &PatchTool{WorkingDir: wd, Provider: patchProvider, Profile: patchProfile, VM: cfg.VM, Root: sandboxDir, Refusal: sandboxErr}
 
 	changeDirTool := &ChangeDirTool{
 		WorkingDir: wd,

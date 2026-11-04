@@ -1,6 +1,7 @@
 package claudetool
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -640,6 +641,69 @@ func TestPatchTool_RelativePaths(t *testing.T) {
 	}
 	if string(content) != "relative path test\n" {
 		t.Error("relative path file content incorrect")
+	}
+}
+
+func TestPatchTool_Root(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	patch := &PatchTool{WorkingDir: NewMutableWorkingDir(root), Root: root}
+	write := func(path string) llm.ToolOut {
+		return patch.runInput(t.Context(), PatchInput{
+			Path:    path,
+			Patches: []PatchRequest{{Operation: "overwrite", NewText: "text\n"}},
+		})
+	}
+
+	for _, path := range []string{filepath.Join(outside, "file.txt"), "escape/file.txt"} {
+		result := write(path)
+		if result.Error == nil || !strings.Contains(result.Error.Error(), "outside") {
+			t.Errorf("write %q: error %v, want refusal", path, result.Error)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(outside, "file.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("file outside root: stat error %v, want not exist", err)
+	}
+
+	if result := write("sub/file.txt"); result.Error != nil {
+		t.Fatalf("write inside root: %v", result.Error)
+	}
+	content, err := os.ReadFile(filepath.Join(root, "sub", "file.txt"))
+	if err != nil || string(content) != "text\n" {
+		t.Errorf("file inside root: %q, %v", content, err)
+	}
+}
+
+type unopenedSandbox struct{}
+
+func (unopenedSandbox) WorkingDir(context.Context, string) (string, error) {
+	return "", errors.New("no sandbox")
+}
+
+func (unopenedSandbox) Wrap(string, string, string) string { return "false" }
+
+func TestPatchTool_UnopenedSandboxRefuses(t *testing.T) {
+	dir := t.TempDir()
+	ts := NewToolSet(t.Context(), ToolSetConfig{WorkingDir: dir, Sandbox: unopenedSandbox{}})
+	defer ts.Cleanup()
+	var patch *llm.Tool
+	for _, tool := range ts.Tools() {
+		if tool.Name == PatchName {
+			patch = tool
+		}
+	}
+	if patch == nil {
+		t.Fatal("no patch tool")
+	}
+	result := patch.Run(t.Context(), json.RawMessage(`{"path":"file.txt","patches":[{"operation":"overwrite","newText":"text\n"}]}`))
+	if result.Error == nil || !strings.Contains(result.Error.Error(), "sandbox did not open") {
+		t.Errorf("error %v, want refusal", result.Error)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "file.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("stat error %v, want not exist", err)
 	}
 }
 

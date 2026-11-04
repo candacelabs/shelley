@@ -49,12 +49,68 @@ type PatchTool struct {
 	WorkingDir *MutableWorkingDir
 	// VM, if set, is where the conversation's project work happens: each
 	// call names its target, the VM or this host (see VM).
-	VM             VM
+	VM VM
+	// Root, if set, confines local patches: a path whose real location is
+	// not Root or under it is refused.
+	Root string
+	// Refusal, if set, refuses every patch with it: the confinement Root
+	// would give could not be established.
+	Refusal        error
 	clipboardMu    sync.RWMutex
 	clipboards     map[string]string
 	clipboardLocks sync.Map // map[string]*sync.Mutex
 	pathLocksMu    sync.Mutex
 	pathLocks      []*patchPathLock
+}
+
+// realPath resolves the symlinks in path; for a path that does not exist
+// yet, those of its nearest existing ancestor.
+func realPath(path string) (string, error) {
+	dir := path
+	for {
+		_, err := os.Lstat(dir)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", err
+		}
+		dir = parent
+	}
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", err
+	}
+	rest, err := filepath.Rel(dir, path)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(resolved, rest), nil
+}
+
+// checkRoot refuses path unless Root is unset or path's real location is
+// Root or under it.
+func (p *PatchTool) checkRoot(path string) error {
+	if p.Root == "" {
+		return nil
+	}
+	root, err := filepath.EvalSymlinks(p.Root)
+	if err != nil {
+		return fmt.Errorf("resolve patch root %q: %w", p.Root, err)
+	}
+	resolved, err := realPath(path)
+	if err != nil {
+		return fmt.Errorf("resolve path %q: %w", path, err)
+	}
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("path %q is outside %q", path, p.Root)
+	}
+	return nil
 }
 
 func canonicalPatchPath(path string) string {
@@ -447,6 +503,9 @@ func classifyPatchError(err error) string {
 }
 
 func (p *PatchTool) runApplyPatch(ctx context.Context, text string) llm.ToolOut {
+	if p.Refusal != nil {
+		return llm.ErrorToolOut(p.Refusal)
+	}
 	files, err := parseApplyPatch(text)
 	if err != nil {
 		p.logResult(ctx, "invalid_input", err)
@@ -462,7 +521,12 @@ func (p *PatchTool) runApplyPatch(ctx context.Context, text string) llm.ToolOut 
 			if !filepath.IsAbs(path) {
 				path = filepath.Join(p.getWorkingDir(), path)
 			}
-			pathSet[filepath.Clean(path)] = struct{}{}
+			path = filepath.Clean(path)
+			if err := p.checkRoot(path); err != nil {
+				p.logResult(ctx, "invalid_input", err)
+				return llm.ErrorToolOut(err)
+			}
+			pathSet[path] = struct{}{}
 		}
 	}
 	paths := make([]string, 0, len(pathSet))
@@ -961,6 +1025,9 @@ func applyPatchHunkSelector(header string) (int, string, error) {
 }
 
 func (p *PatchTool) runInput(ctx context.Context, input PatchInput) llm.ToolOut {
+	if p.Refusal != nil {
+		return llm.ErrorToolOut(p.Refusal)
+	}
 	vm, err := targetVM(p.VM, input.SSHTarget)
 	if err != nil {
 		return llm.ErrorToolOut(err)
@@ -979,6 +1046,11 @@ func (p *PatchTool) runInput(ctx context.Context, input PatchInput) llm.ToolOut 
 		input.Path = filepath.Join(dir, input.Path)
 	}
 	input.Path = filepath.Clean(input.Path)
+	if vm == nil {
+		if err := p.checkRoot(input.Path); err != nil {
+			return llm.ErrorToolOut(err)
+		}
+	}
 	unlockClipboards := p.lockClipboards(input.Patches)
 	defer unlockClipboards()
 	unlockPath := p.lockPath(vm, input.Path)
